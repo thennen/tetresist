@@ -1,6 +1,8 @@
 import numpy as np
 from matplotlib import pyplot as plt
 
+# TODO: don't delete tetras, set some property so they aren't drawn
+# Store entire history and make movies quickly
 
 class tetris():
     ''' Play tetris very poorly '''
@@ -10,14 +12,18 @@ class tetris():
         self.spawnpoint = (-4, w/2 - 1)
         self.tetras = []
         self.gameover = False
-        self.movehistory = []
+        self.history = [self.tetras]
+
+    def __repr__(self):
+        return '{}x{} Tetris instance with {} tetras'.format(self.h, self.w, len(self.tetras))
 
     def field(self):
         field = np.zeros((self.h, self.w))
         for tet in self.tetras:
-            for o in tet.occupied:
-                if o[0] >= 0:
-                    field[o] = 1
+            if not tet.deleted:
+                for o in tet.occupied:
+                    if o[0] >= 0:
+                        field[o] = 1
         return field
 
     def spawn(self, kind=None, rotation=None, loc=None):
@@ -49,19 +55,38 @@ class tetris():
         ''' Try to move a tetra '''
         piece = self.tetras[tetranum]
         piece.move(x, y)
-
-        if self.impacto():
+        impact = self.impacto()
+        if impact:
+            # Undo movement
             piece.move(-x, -y)
-            if x > 0:
+            if x != 0:
+                # Vertical movement
                 if any([o[0] < 0 for o in piece.occupied]):
-                    # Piece touches top row
+                    # Piece stops above top
                     self.gameover = True
+                if all([o[0] < 0 for o in piece.occupied]):
+                    piece.deleted = 1
+                # Failed to move up or down
                 return 0
             else:
-                # Impact on the side
-                return 2
-        self.movehistory.append((x, y, tetranum % len(self.tetras)))
+                # Horizontal movement
+                if impact == 1:
+                    # Hit a piece
+                    return 2
+                elif impact == 2:
+                    # Hit a wall
+                    return 3
+        # Moved successfully
+        return 1
 
+    def rotate(self, n=1, tetranum=-1):
+        ''' Try to rotate a tetra '''
+        piece = self.tetras[tetranum]
+        piece.rotate(n)
+        if self.impacto():
+            # Failed to rotate, so rotate back
+            piece.rotate(4 - n % 4)
+            return 0
         return 1
 
     def impacto(self, tetranum=-1):
@@ -69,19 +94,17 @@ class tetris():
         tetra = self.tetras[tetranum]
         # Hit a wall?
         if not all([0 <= o[1] < self.w for o in tetra.occupied]):
-            return 1
+            return 2
         if not all([-4 <= o[0] < self.h for o in tetra.occupied]):
-            return 1
-
+            return 2
         # Hit another piece? Check only ones nearby.
         for i, t in enumerate(self.tetras):
-            if i != tetranum % len(self.tetras):
+            if not t.deleted and i != tetranum % len(self.tetras):
                 x1, y1 = tetra.loc
                 x2, y2 = t.loc
                 if abs(x1 - x2) < 4 and abs(y1 - y2) < 4:
                     if any(tetra.occupied & t.occupied):
                         return 1
-
         return 0
 
     def randgame(self, p=1./3):
@@ -109,9 +132,9 @@ class tetris():
         self.move(0, trans, tetranum)
         return self.move(x, 0, tetranum)
 
-    def plot(self, ax=None):
+    def plot(self, ax=None, **kwargs):
         ''' Plot current state of the field '''
-        image = [[(1,1,1) for j in range(self.w)] for i in range(self.h)]
+        image = [[(1, 1, 1) for j in range(self.w)] for i in range(self.h)]
         for tet in self.tetras:
             for o in tet.occupied:
                 if o[0] >= 0:
@@ -119,7 +142,7 @@ class tetris():
 
         if ax is None:
             ax = plt.gca()
-        ax.imshow(image, interpolation='nearest')
+        ax.imshow(image, interpolation='nearest', **kwargs)
         ax.yaxis.set_ticklabels([])
         ax.xaxis.set_ticklabels([])
         ax.xaxis.set_ticks([])
@@ -172,6 +195,7 @@ class tetra():
         self.loc = list(loc)
         self.rot = 0
         self.kind = kind
+        self.deleted = 0
         self.calc_occupied()
 
     def move(self, dx, dy):
