@@ -1,0 +1,24 @@
+stages = []
+Emags = []
+t = tetresist(50, 50)
+while not t.gameover:
+    stages.append(deepcopy(t))
+    %run -i rsolve.py
+    Emags.append(Emag)
+    for _ in range(5):
+        t.spawn()
+        t.randdrop()
+%run -i rsolve.py
+stages.append(deepcopy(t))
+Emags.append(Emag)
+# Plot on same scale write to disk
+vmin = np.min([np.min(e) for e in Emags])
+vmax = np.max([np.max(e) for e in Emags])
+for i,e in enumerate(Emags):
+    fig, ax = plt.subplots()
+    ax.imshow(e, interpolation='none', vmin=vmin, vmax=vmax*.7)
+    ax.yaxis.set_ticklabels([])
+    ax.xaxis.set_ticklabels([])
+    ax.xaxis.set_ticks([])
+    ax.yaxis.set_ticks([])
+    ax.savefig(r'.\Efieldplots\{}.png'.format(i), bbox_inches='tight')
