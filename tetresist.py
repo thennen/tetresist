@@ -175,7 +175,7 @@ class tetresist():
         self.computetime = dt
         #print('Done.  R = {}. {} seconds'.format(self.R, dt))
 
-    def plot(self, hue=None, ax=None, **kwargs):
+    def plot(self, hue=None, ax=None, hl=None, **kwargs):
         ''' Plot current state of the field '''
         if hue is None:
             image = [[(1, 1, 1) for j in range(self.w)] for i in range(self.h)]
@@ -198,6 +198,36 @@ class tetresist():
         if ax is None:
             ax = plt.gca()
         ax.imshow(image, interpolation='nearest', **kwargs)
+        ax.yaxis.set_ticklabels([])
+        ax.xaxis.set_ticklabels([])
+        ax.xaxis.set_ticks([])
+        ax.yaxis.set_ticks([])
+        plt.draw()
+
+        return ax
+
+    def plot_all(self, hue=None, ax=None, **kwargs):
+        ''' Plot current state of the field, including spawn area '''
+        if hue is None:
+            image = [[(1, 1, 1) for j in range(self.w)] for i in range(self.h + 4)]
+            for tet in self.tetras:
+                for o in tet.occupied:
+                    image[o[0]+4][o[1]] = tet.color
+        else:
+            image = np.nan * np.ones((self.h, self.w))
+            #if type(cmap) is str:
+                #cmap = plt.cm.get_cmap(cmap)
+            for tet in self.tetras:
+                occ = list(tet.occupied)
+                # Find average value of hue (should be mxn)
+                hue_avg = np.sum(hue[zip(*occ)])/len(occ)
+                for o in occ:
+                    image[o[0]+4][o[1]] = hue_avg
+
+        if ax is None:
+            ax = plt.gca()
+        ax.imshow(image, interpolation='nearest', **kwargs)
+        #ax.hlines(3.5, 0, self.w, linestyles='dashed')
         ax.yaxis.set_ticklabels([])
         ax.xaxis.set_ticklabels([])
         ax.xaxis.set_ticks([])
@@ -328,7 +358,7 @@ class rerun(tetresist):
     def __init__(self, parent, start=0):
         tetresist.__init__(self, h=parent.h, w=parent.w, R1=parent.R1, R2=parent.R2)
         self.commands = parent.history
-        self.frame = start
+        self.frame = 0
         self.next(start)
 
     def next(self, numframes=1):
@@ -342,10 +372,10 @@ class rerun(tetresist):
         pass
 
 import matplotlib.animation as animation
-def movie(game, interval=0.1, skipframes=0):
+def movie(game, interval=0.1, skipframes=0, start=0):
     ''' TODO: generate everything before animation somehow '''
+    t = rerun(game, start=start)
     def data_gen():
-        t = rerun(game)
         while t.frame < len(t.commands):
             yield t
             t.next(1+skipframes)
@@ -355,7 +385,7 @@ def movie(game, interval=0.1, skipframes=0):
             del ax.images[0]
         except:
             pass
-        data.plot(ax=ax)
+        data.plot_all(ax=ax)
         #data.compute()
         #data.plotV(alpha=0.3)
         return ax.images
@@ -363,6 +393,12 @@ def movie(game, interval=0.1, skipframes=0):
     #Writer = animation.writers['ffmpeg']
     #writer = Writer(fps=150, metadata=dict(artist='Me'), bitrate=3000)
     fig, ax = plt.subplots()
+    #t.plot(ax=ax)
+    #ax.hlines(3.5, -0.5, game.w, linestyles='dashed', zorder=10)
+    #spawn = np.zeros((game.h, game.w))
+    #spawn[0:4, :] = 1
+    #ax.imshow(spawn, alpha=.3, cmap='gray_r', interpolation='none')
+    #plt.pause(.3)
 
     ani = animation.FuncAnimation(fig, run, data_gen, blit=True, interval=interval, save_count=5000)
     #ani.save('movie.mp4', writer=writer)
