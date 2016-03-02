@@ -60,6 +60,15 @@ def tetrafield(tetra):
     Ey_avg = (np.sum(t.Ey[zip(*pos)]) + (leno - lenp)*E_above[1]) / leno
     return Ex_avg, Ey_avg
 
+def tetravoltage(tetra):
+    ''' return average voltage for tetra '''
+    o = list(tetra.occupied)
+    leno = len(o)
+    pos = [p for p in o if p[0] >= 0]
+    lenp = len(pos)
+    V_above = np.mean(t.V[0])
+    V_avg = (np.sum(t.V[zip(*pos)]) + (leno - lenp) * V_above) / leno
+    return V_avg
 
 def tetrapower(tetra):
     ''' return average power at tetra location'''
