@@ -2,10 +2,12 @@ import numpy as np
 from matplotlib import pyplot as plt
 from tetresist import tetresist
 
-# TODO: spawn location depends on electric field
+# TODO:
 #       current limiting
 #       better plots for preview
 #       wrap horizontal
+#       filter IV loop to simulate measurement
+#       Detached volumes of metal should not reduce impacting pieces
 
 kT = 0.026
 f0 = 10**13
@@ -15,6 +17,12 @@ f0 = 10**13
 #_Eb = .35
 #alpha = .5
 #beta = .5
+
+reduced_Eb = .45
+move_Eb = .15
+beta = .3
+
+I_limit = .1
 
 t = tetresist(50, 100, R1=10000, R2=1)
 
@@ -30,20 +38,13 @@ time = [0]
 step = [0]
 current_time = 0
 
-wtf_show_p = 1
+#wtf_show_p = 1
 
 
 def V_interp(t):
     ''' calculate voltage at some time '''
     return np.interp(t, t_wfm, V_wfm)
-    # return np.interp(t, t_wfm, V_wfm, left=0, right=0)
-
-
-def spawnloc():
-    # randn = np.random.normal(t.w/2., t.w/6.)
-    randint = np.random.randint(t.w * .1, t.w * .9)
-    # return (-4, int(randn))
-    return (-4, randint)
+# return np.interp(t, t_wfm, V_wfm, left=0, right=0)
 
 
 def tetrafield(tetra):
@@ -66,44 +67,109 @@ def tetrapower(tetra):
     P_avg = np.sum(t.P[zip(*o)])/len(o)
     return P_avg
 
-
-def move_with_field((Ex, Ey), tetranum=-1):
-    beta = 0.52
-    Eb = 0.5
-    kT = 0.026
-    up = (-1, 0)
-    p_up = np.exp(-(Eb + beta * Ex)/kT)
-    down = (1, 0)
-    p_down = np.exp(-(Eb - beta * Ex)/kT)
-    left = (0, -1)
-    p_left = np.exp(-(Eb + beta * Ey)/kT)
-    right = (0, 1)
-    p_right = np.exp(-(Eb - beta * Ey)/kT)
-
-    m = [up, down, left, right]
-    p = np.array([p_up, p_down, p_left, p_right])
-    p /= np.sum(p)
-
-    move = np.random.choice((0, 1, 2, 3), p=p)
-    return t.move(*m[move])
-    # print('move {}'.format(['up','down','left','right'][move]))
-
-
-def do_something():
+def do_something(t):
     ''' calculate all rate parameters and decide to do something.  return dt '''
     # Probably very slow
-    global wtf_show_p
+    #global wtf_show_p
 
     # Flag to decide whether to recompute voltages
     compute = False
 
+    ntetras = len(t.tetras)
+
+    # Find probabilities for possible events
+    gamma = calc_gamma(t)
+    p, dt = calc_p_dt(gamma)
+
+    #if wtf_show_p % 10 == 1:
+        #ax3.cla()
+        #ax3.plot(p)
+        #plt.pause(.1)
+    #wtf_show_p += 1
+
+
+    # Pick the something that will happen
+    did_something = False
+    while not did_something:
+        something = np.random.choice(range(len(gamma)), p=p)
+        if (ntetras == 0) or something >= 4 * ntetras:
+            # spawn new tetra
+            spawn_loc = something - 4 * ntetras
+            if t.spawn(loc=(-4, spawn_loc)):
+                did_something = True
+                t.tetras[-1].Eb = move_Eb
+                print('Spawn new tetra')
+            else:
+                # Failed to spawn
+                gamma[something] = 0
+                p, dt = calc_p_dt(gamma)
+        else:
+            direction = something / ntetras
+            tetranum = something % ntetras
+            # If reduced piece moved, consider it oxidized
+            if t.tetras[tetranum].Eb == reduced_Eb:
+                t.tetras[tetranum].Eb = move_Eb
+                compute = True
+
+            # Try to move existing tetra
+            if direction == 3:
+                m = t.move(1, 0, tetranum=tetranum)
+            elif direction == 2:
+                m = t.move(-1, 0, tetranum=tetranum)
+            elif direction == 1:
+                m = t.move(0, 1, tetranum=tetranum)
+            elif direction == 0:
+                m = t.move(0, -1, tetranum=tetranum)
+            # May have deleted the tetra if it hit something and wasn't visible
+            # This is a legitimate move
+            if len(t.tetras) < ntetras:
+                m = 0
+
+            if m:
+                # Hit something
+                # TODO: Should count as an action if it hasn't happened before
+                # Prevent that from happening again, and recalculate dt
+                gamma[something] = 0
+                p, dt = calc_p_dt(gamma)
+                if direction == 3 and m[0] == -1:
+                    # hit bottom
+                    t.tetras[tetranum].Eb = reduced_Eb
+
+                if m[0] != -1:
+                    # hit tetra
+                    if t.tetras[m[0]].Eb == reduced_Eb:
+                        # hit reduced tetra
+                        t.tetras[tetranum].Eb = reduced_Eb
+
+                compute = True
+            else:
+                # Moved successfully
+                did_something = True
+                if direction == 3:
+                    print('Move down')
+                elif direction == 2:
+                    print('Move up')
+                elif direction == 1:
+                    print('Move right')
+                elif direction == 0:
+                    print('Move left')
+
+    return (dt, compute)
+
+
+def calc_p_dt(gamma):
+    gamma_sum = np.sum(gamma)
+    dt = - 1 / gamma_sum * np.log(np.random.rand())
+    p = gamma / gamma_sum
+    return p, dt
+
+
+def calc_gamma(t):
+    ''' Calculate the probability for every possible movement '''
+    # Probably very slow
+
     E_electrode = t.Ex[0]
     spawn_Eb = .35 - .1 * E_electrode
-    move_Eb = .15
-    reduced_Eb = .45
-    beta = .3
-
-    #print('spawn Eb = {}'.format(spawn_Eb))
 
     Ex = []
     Ey = []
@@ -124,67 +190,8 @@ def do_something():
     gamma_down = f0 * np.exp(-(Eb - beta * Ex) / kT)
     gamma_spawn = f0 * np.exp(-spawn_Eb / kT)
     gamma = np.concatenate((gamma_left, gamma_right, gamma_up, gamma_down, gamma_spawn))
-    gamma_sum = np.sum(gamma)
-    dt = - 1 / gamma_sum * np.log(np.random.rand())
-    p = gamma / gamma_sum
 
-    if wtf_show_p % 10 == 1:
-        ax3.cla()
-        ax3.plot(p)
-        plt.pause(.1)
-    wtf_show_p += 1
-
-    ntetras = len(t.tetras)
-    if ntetras == 0:
-        t.spawn(loc=spawnloc())
-        t.tetras[-1].Eb = move_Eb
-        return dt, compute
-
-    # Pick the something that will happen
-    something = np.random.choice(range(len(gamma)), p=p)
-    direction = something / ntetras
-    tetranum = something % ntetras
-    if direction > 3:
-        # spawn new tetra
-        t.spawn(loc=(-4, something - ntetras * 4))
-        t.tetras[-1].Eb = move_Eb
-        print('Spawn new tetra')
-    else:
-        # If reduced piece moved, consider it oxidized
-        if t.tetras[tetranum].Eb == reduced_Eb:
-            t.tetras[tetranum].Eb = move_Eb
-            compute = True
-            #print('Reduce tetra')
-
-        # move existing tetra
-        if direction == 3:
-            m = t.move(1, 0, tetranum=tetranum)
-            print('Move down')
-        elif direction == 2:
-            m = t.move(-1, 0, tetranum=tetranum)
-            print('Move up')
-        elif direction == 1:
-            m = t.move(0, 1, tetranum=tetranum)
-            print('Move right')
-        elif direction == 0:
-            m = t.move(0, -1, tetranum=tetranum)
-            print('Move left')
-
-        if m:
-            # hit something
-            if direction == 3 and m[0] == -1:
-                # hit bottom
-                t.tetras[tetranum].Eb = reduced_Eb
-                compute = True
-
-            if m[0] != -1:
-                # hit tetra
-                if t.tetras[m[0]].Eb == reduced_Eb:
-                    # hit reduced tetra
-                    t.tetras[tetranum].Eb = reduced_Eb
-                    compute = True
-
-    return (dt, compute)
+    return gamma
 
 def preview():
     ''' do a plot showing state of system '''
@@ -220,11 +227,12 @@ def pulse(v=[0, 5, 0, -5, 0], duration=1e-3):
     i = 0
     while current_time - t0 < duration:
         # Save some stuff
-        dt, compute = do_something()
+        dt, compute = do_something(t)
         current_time += dt
         time.append(current_time)
-        # TODO: min( , )
-        V_contact=V_interp(current_time)
+        V_contact = V_interp(current_time)
+        # Limit current
+        #V_contact = min(V_contact, I_limit*t.R)
         if compute or i % 10 == -1:
             # compute sometimes
             t.compute(V_contact=V_contact)
@@ -232,6 +240,10 @@ def pulse(v=[0, 5, 0, -5, 0], duration=1e-3):
             I.append(t.I)
             R.append(t.R)
             IVtime.append(time[-1])
+            # Stop if current limit exceeded
+            if t.I >= I_limit:
+                # Quick hack to stop pulse
+                current_time = duration + t0
         if i % 500 == 0:
             preview()
         print('Time: {:.3e} s'.format(time[-1]))
@@ -246,32 +258,9 @@ if __name__ == '__main__':
     t.compute(V_contact=1)
     R.append(t.R)
 
-    fig1, ax1 = plt.subplots()
-    fig2, ax2 = plt.subplots()
-    fig3, ax3 = plt.subplots()
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(8,12))
+
+    #fig1, ax1 = plt.subplots()
+    #fig2, ax2 = plt.subplots()
+    #fig3, ax3 = plt.subplots()
     preview()
-
-
-'''
-t.compute(V_contact=1)
-#while not t.gameover:
-while len(t.tetras) < 1000:
-    print('spawning tetra {}'.format(len(t.tetras)+1))
-    t.spawn(loc=spawnloc())
-    # Move along field until stop moving
-    # Stop when tetra hits another in any direction, or tetra hits top or bottom
-    stopwhen = (0, 2)
-    while move_with_field(tetrafield(t.tetras[-1])) not in stopwhen:
-        #t.plot()
-        #plt.pause(.01)
-        pass
-    t.compute()
-    #t.plotE_vect()
-    #V.append(t.V_contact)
-    I.append(t.I)
-#plt.figure()
-#plt.plot(V, I)
-plt.figure()
-t.plot()
-'''
-
