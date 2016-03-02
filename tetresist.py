@@ -1,5 +1,7 @@
 # Sick of stupid subclass.  Combining tetris.py and sim.py
+import os
 import numpy as np
+import matplotlib.animation as animation
 from matplotlib import pyplot as plt
 from meshsolve import solve
 from time import time
@@ -366,12 +368,12 @@ class rerun(tetresist):
         for cmd, args in self.commands[self.frame:self.frame + numframes]:
             getattr(self, cmd)(**args)
         self.frame += numframes
+        return 0 if self.frame > len(self.commands) else 1
 
     def prev(self):
         # Does nothing.
         pass
 
-import matplotlib.animation as animation
 def movie(game, interval=0.1, skipframes=0, start=0):
     ''' TODO: generate everything before animation somehow '''
     t = rerun(game, start=start)
@@ -403,6 +405,36 @@ def movie(game, interval=0.1, skipframes=0, start=0):
     ani = animation.FuncAnimation(fig, run, data_gen, blit=True, interval=interval, save_count=5000)
     #ani.save('movie.mp4', writer=writer)
     return ani
+
+def write_movie_frames(game, dir, skipframes=0, start=0):
+    ''' Write a bunch of pngs to directory for movie '''
+    plt.ioff()
+
+    if not os.path.isdir(dir):
+        os.makedirs(dir)
+
+    t = rerun(game, start=start)
+    def data_gen():
+        while t.frame < len(t.commands):
+            yield t
+            if not t.next(1+skipframes):
+                return
+
+    # Maybe not the real length
+    length = len(t.history) / (skipframes + 1)
+    for i, d in enumerate(data_gen()):
+        d.compute()
+        ax = d.plot(hue=d.I_mag, cmap='Reds')
+        fig = ax.figure
+        fn = os.path.join(dir, 'frame{:0>4d}'.format(i))
+        fig.savefig(fn)
+        plt.close(ax.figure)
+        print('Wrote {}/{}: {}'.format(i, length, fn))
+
+    # Send command to create video with ffmpeg
+    #os.system(r'ffmpeg –framerate 30 –i loop%04d.png –c:v libx264 –r 30 –pix_fmt yuv420p out.mp4')
+
+    plt.ion()
 
 def movie2(game, interval=0.1, skipframes=0):
     ''' TODO: generate everything before animation somehow '''

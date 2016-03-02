@@ -8,6 +8,7 @@ from tetresist import tetresist
 #       wrap horizontal
 #       filter IV loop to simulate measurement
 #       Detached volumes of metal should not reduce impacting pieces
+#       Detect switching and change sweep direction
 
 kT = 0.026
 f0 = 10**13
@@ -146,8 +147,17 @@ def do_something(t):
 
                 if m[0] != -1:
                     # hit tetra
-                    if t.tetras[m[0]].Eb == reduced_Eb:
+                    #if t.tetras[m[0]].Eb == reduced_Eb:
                         # hit reduced tetra
+                        #t.tetras[tetranum].Eb = reduced_Eb
+
+                    V_contact = V_interp(current_time)
+                    vplus = np.max(V_contact, 0)
+                    vminus = np.min(V_contact, 0)
+                    vthresh = vminus + 0.1 * (vplus - vminus)
+                    if tetravoltage(t.tetras[m[0]]) < vthresh:
+                        # Voltage is 'near' more negative electrode
+                        # TODO: more sophisticated decision about when to reduce
                         t.tetras[tetranum].Eb = reduced_Eb
 
                 compute = True
