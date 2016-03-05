@@ -7,9 +7,8 @@ from meshsolve import solve
 from time import time
 import matplotlib.gridspec as gridspec
 from copy import deepcopy
+import pickle
 
-# TODO:
-# Store entire history and make movies quickly
 
 class tetresist():
     def __init__(self, h=20, w=20, R1=10000, R2=10):
@@ -20,7 +19,10 @@ class tetresist():
         self.spawnpoint = (-4, w/2 - 1)
         self.tetras = []
         self.gameover = False
+        # Stores actions that change state of system
+        # List of (method, {args}) to produce that change
         self.history = []
+        # Stores all actions.
         self.log = []
 
     def __repr__(self):
@@ -289,6 +291,15 @@ class tetresist():
         field = self.field()
         return (field == 0) * self.R1 + (field * self.R2)
 
+    def pickle(self, fp='tetresist.pickle'):
+        if os.path.isfile(fp):
+            print('File already exists.')
+        else:
+            with open(fp, 'w') as f:
+                pickle.dump(self, f)
+                print('Dumped pickle to\n' + fp)
+
+
 
 class tetra():
     ''' class for each tetragon.  Knows its shape, color, and location '''
@@ -420,19 +431,21 @@ def write_movie_frames(game, dir, skipframes=0, start=0):
             if not t.next(1+skipframes):
                 return
 
+    fig, ax = plt.subplots()
+
     # Maybe not the real length
     length = len(t.history) / (skipframes + 1)
     for i, d in enumerate(data_gen()):
         d.compute()
-        ax = d.plot(hue=d.I_mag, cmap='Reds')
-        fig = ax.figure
-        fn = os.path.join(dir, 'frame{:0>4d}'.format(i))
-        fig.savefig(fn)
+        ax.cla()
+        d.plot(hue=d.I_mag, cmap='Reds', ax=ax)
+        fn = os.path.join(dir, 'frame{:0>4d}.png'.format(i))
+        fig.savefig(fn, bbox_inches='tight')
         plt.close(ax.figure)
         print('Wrote {}/{}: {}'.format(i, length, fn))
 
     # Send command to create video with ffmpeg
-    #os.system(r'ffmpeg –framerate 30 –i loop%04d.png –c:v libx264 –r 30 –pix_fmt yuv420p out.mp4')
+    #os.system(r'ffmpeg -framerate 30 -i loop%04d.png -c:v libx264 -r 30 -pix_fmt yuv420p out.mp4')
 
     plt.ion()
 

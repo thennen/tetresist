@@ -1,17 +1,23 @@
 import numpy as np
 from matplotlib import pyplot as plt
 from tetresist import tetresist
+from itertools import groupby
+import os
 
 # TODO:
-#       current limiting
 #       better plots for preview
 #       wrap horizontal
 #       filter IV loop to simulate measurement
 #       Detached volumes of metal should not reduce impacting pieces
 #       Detect switching and change sweep direction
+#       input rate instead of time
+#       Identify frame with IV loop
+#       Make frames of movie by voltage step, include IV loop
+#       Stop?
+#       Save energy barriers
+#       Use real units
 
-kT = 0.026
-f0 = 10**13
+
 # not used yet
 #desorb_Eb = .3
 #diffuse_Eb = .15
@@ -19,9 +25,17 @@ f0 = 10**13
 #alpha = .5
 #beta = .5
 
-reduced_Eb = .45
+kT = 0.026
+f0 = 10**13
+# Spawn energy barrier = spawn_Eb - alpha * E_electrode
+spawn_Eb = .35
+alpha=.1
+# Moving energy barrier for ions move_Eb - beta * E
 move_Eb = .15
 beta = .3
+# Moving energy barrier for "reduced" ion: reduced_Eb - beta * E
+reduced_Eb = .45
+
 
 I_limit = .1
 
@@ -29,15 +43,15 @@ t = tetresist(50, 100, R1=10000, R2=1)
 
 V_wfm = [0]
 t_wfm = [0]
+time = [0]
+current_time = 0
 
 # These get new values whenever compute() happens, which is not every iteration
 V = [0]
 I = [0]
 R = []
+frame = [0]
 IVtime = [0]
-time = [0]
-step = [0]
-current_time = 0
 
 #wtf_show_p = 1
 
@@ -155,8 +169,11 @@ def do_something(t):
                     vplus = np.max(V_contact, 0)
                     vminus = np.min(V_contact, 0)
                     vthresh = vminus + 0.1 * (vplus - vminus)
-                    if tetravoltage(t.tetras[m[0]]) < vthresh:
+                    threshold = tetravoltage(t.tetras[m[0]]) < vthresh
+                    isreduced = t.tetras[m[0]].Eb == reduced_Eb
+                    if isreduced and threshold:
                         # Voltage is 'near' more negative electrode
+                        # impacted piece is reduced
                         # TODO: more sophisticated decision about when to reduce
                         t.tetras[tetranum].Eb = reduced_Eb
 
@@ -188,7 +205,6 @@ def calc_gamma(t):
     # Probably very slow
 
     E_electrode = t.Ex[0]
-    spawn_Eb = .35 - .1 * E_electrode
 
     Ex = []
     Ey = []
@@ -207,7 +223,7 @@ def calc_gamma(t):
     gamma_right = f0 * np.exp(-(Eb - beta * Ey) / kT)
     gamma_up = f0 * np.exp(-(Eb + beta * Ex) / kT)
     gamma_down = f0 * np.exp(-(Eb - beta * Ex) / kT)
-    gamma_spawn = f0 * np.exp(-spawn_Eb / kT)
+    gamma_spawn = f0 * np.exp(-(spawn_Eb - alpha * E_electrode) / kT)
     gamma = np.concatenate((gamma_left, gamma_right, gamma_up, gamma_down, gamma_spawn))
 
     return gamma
@@ -226,11 +242,6 @@ def preview():
     ax2.set_title('IV Loop')
     ax2.set_xlabel('V')
     ax2.set_ylabel('I')
-
-    #E_electrode = t.Ex[0]
-    #spawn_Eb = .3 - .1 * E_electrode
-    #ax3.cla()
-    #ax3.plot(f0 * np.exp(-spawn_Eb / kT))
 
     plt.show()
     plt.pause(.4)
@@ -255,14 +266,26 @@ def pulse(v=[0, 5, 0, -5, 0], duration=1e-3):
         if compute or i % 10 == -1:
             # compute sometimes
             t.compute(V_contact=V_contact)
-            V.append(V_contact)
-            I.append(t.I)
-            R.append(t.R)
-            IVtime.append(time[-1])
-            # Stop if current limit exceeded
             if t.I >= I_limit:
+                # if current limit exceeded, scale a bunch of computed
+                # parameters
+                factor = I_limit / t.I
+                t.I = I_limit
+                t.I_mag *= factor
+                t.V *= factor
+                t.P *= factor
+                t.Ex *= factor
+                t.Ey *= factor
+                t.Ix *= factor
+                t.Iy *= factor
+                # Stop if current limit exceeded
                 # Quick hack to stop pulse
-                current_time = duration + t0
+                # current_time = duration + t0
+            I.append(t.I)
+            V.append(V_contact)
+            R.append(t.R)
+            frame.append(len(t.history))
+            IVtime.append(time[-1])
         if i % 500 == 0:
             preview()
         print('Time: {:.3e} s'.format(time[-1]))
@@ -272,6 +295,100 @@ def pulse(v=[0, 5, 0, -5, 0], duration=1e-3):
         i += 1
     t.compute()
     preview()
+
+def writedata(fp='iv'):
+    ''' Write IV loop data '''
+    # Why writing in text?
+    noext = os.path.splitext(fp)[0]
+    txtfp = noext + '.txt'
+    picklefp = noext + '.pickle'
+    if os.path.isfile(fp):
+        print('File already exists.')
+    else:
+        with open(txtfp, 'w') as f:
+            f.write('#kT = {}/n'.format(kT))
+            f.write('#f0 = {}/n'.format(f0))
+            f.write('#spawn_Eb = {}/n'.format(spawn_Eb))
+            f.write('#alpha = {}/n'.format(alpha))
+            f.write('#move_Eb = {}/n'.format(move_Eb))
+            f.write('#beta = {}/n'.format(beta))
+            f.write('#reduced_Eb = {}/n'.format(reduced_Eb))
+            f.write('frame\tI\tV\tR\ttime\n')
+            np.savetxt(f, np.transpose([frame, I, V, R, IVtime]),
+                       fmt='%.3e', delimiter='\t')
+            print('Wrote data to\n' + fp)
+            t.pickle(picklefp)
+
+def write_frames(dir, skipframes=0, start=0, dV=.01, writeloop=True):
+    '''
+    Write a bunch of pngs to directory for movie.
+    Step frames by voltage
+    basically so you don't capture a ton of frames where nothing is happening
+    TODO: step by voltage OR current, so you don't miss any good frames
+    '''
+    plt.ioff()
+
+    # Determine frames to save
+    vsteps = np.cumsum(np.abs(np.diff(V)))
+    # Doesn't catch frame if vstep is not much smaller than dV
+    #big_steps = np.where(diff(vsteps % dV) < 0)[0]
+    #ind = big_steps + 2
+    gp = groupby(enumerate(vsteps), lambda vs: int(vs[1]/dV))
+    ind = [0]
+    ind.extend([g.next()[0] + 1 for k,g in gp])
+    save_frames = np.array(frame)[ind]
+
+    if not os.path.isdir(dir):
+        os.makedirs(dir)
+
+    r = tetresist.rerun(t, start=start)
+    def data_gen():
+        for di in np.diff(save_frames):
+            yield r
+            if not r.next(di):
+                return
+
+    if writeloop:
+        fig = plt.figure(figsize=(8,8))
+        ax1 = fig.add_subplot(211)
+        ax2 = fig.add_subplot(212)
+        ax2.set_xlabel('V')
+        ax2.set_ylabel('I')
+        # Plot loops for autorange
+        ax2.plot(V, I)
+        ax2.scatter(0,0)
+        #del ax2.lines[0]
+    else:
+        fig = plt.figure(figsize=(8,6))
+        ax1 = fig.add_subplot(111)
+
+    length = len(ind)
+    for i, d in enumerate(data_gen()):
+        d.compute()
+        ax1.cla()
+        d.plot(hue=d.I_mag, cmap='Reds', ax=ax1)
+        if writeloop:
+            del ax2.lines[0]
+            del ax2.collections[0]
+            Vloop = V[:ind[i]]
+            Iloop = I[:ind[i]]
+            if len(Vloop) == 0:
+                Vloop = [0]
+                Iloop = [0]
+            ax2.plot(Vloop, Iloop, c='SteelBlue', alpha=.8)
+            ax2.scatter(Vloop[-1], Iloop[-1], c='black', zorder=2)
+        fn = os.path.join(dir, 'frame{:0>4d}.png'.format(i))
+        fig.savefig(fn, bbox_inches='tight')
+        print('Wrote {}/{}: {}'.format(i, length, fn))
+
+    plt.close(fig)
+    # Send command to create video with ffmpeg
+    #os.system(r'ffmpeg -framerate 30 -i loop%04d.png -c:v libx264 -r 30 -pix_fmt yuv420p out.mp4')
+
+    plt.ion()
+
+
+
 
 if __name__ == '__main__':
     t.compute(V_contact=1)
