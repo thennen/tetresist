@@ -1,6 +1,6 @@
 import numpy as np
 from matplotlib import pyplot as plt
-from tetresist import tetresist
+import tetresist
 from itertools import groupby
 import os
 
@@ -31,7 +31,7 @@ f0 = 10**13
 spawn_Eb = .35
 alpha=.1
 # Moving energy barrier for ions move_Eb - beta * E
-move_Eb = .15
+move_Eb = .18
 beta = .3
 # Moving energy barrier for "reduced" ion: reduced_Eb - beta * E
 reduced_Eb = .45
@@ -39,7 +39,7 @@ reduced_Eb = .45
 
 I_limit = .1
 
-t = tetresist(50, 100, R1=10000, R2=1)
+t = tetresist.tetresist(50, 100, R1=10000, R2=1)
 
 V_wfm = [0]
 t_wfm = [0]
@@ -120,9 +120,10 @@ def do_something(t):
             # spawn new tetra
             spawn_loc = something - 4 * ntetras
             if t.spawn(loc=(-4, spawn_loc)):
+            #if t.spawn(loc=(-4, spawn_loc), kind='single'):
                 did_something = True
                 t.tetras[-1].Eb = move_Eb
-                print('Spawn new tetra')
+                # print('Spawn new tetra')
             else:
                 # Failed to spawn
                 gamma[something] = 0
@@ -232,7 +233,8 @@ def preview():
     ''' do a plot showing state of system '''
     ax1.cla()
     t.plot(hue=t.I_mag, cmap='Reds', ax=ax1)
-    t.plotV(alpha=.4, cmap='Blues', ax=ax1)
+    #t.plotV(alpha=.4, cmap='Blues', ax=ax1)
+    t.plotE(alpha=.4, cmap='Blues', ax=ax1)
     #t.plotE_vect(ax=ax1)
     ax1.set_title('V = {:.4e}, t = {:.4e}'.format(V_interp(current_time), current_time))
     ax2.cla()
@@ -366,6 +368,7 @@ def write_frames(dir, skipframes=0, start=0, dV=.01, writeloop=True):
     for i, d in enumerate(data_gen()):
         d.compute()
         ax1.cla()
+        d.Eplot(alpha=.2, cmap='Oranges', ax=ax1)
         d.plot(hue=d.I_mag, cmap='Reds', ax=ax1)
         if writeloop:
             del ax2.lines[0]

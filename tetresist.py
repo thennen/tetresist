@@ -339,7 +339,7 @@ class tetra():
     def __init__(self, kind=1, loc=(0,0)):
         if kind == 'single':
             self.color = (0, 0, 0)
-            self.mat = np.array([1])
+            self.mat = np.array([[1]])
         else:
             self.color = tetra.colors[kind]
             self.mat = tetra.mats[kind]
@@ -438,6 +438,7 @@ def write_movie_frames(game, dir, skipframes=0, start=0):
     for i, d in enumerate(data_gen()):
         d.compute()
         ax.cla()
+        d.plotE(alpha=.2, cmap='Blues', ax=ax, vmin=0, vmax=1)
         d.plot(hue=d.I_mag, cmap='Reds', ax=ax)
         fn = os.path.join(dir, 'frame{:0>4d}.png'.format(i))
         fig.savefig(fn, bbox_inches='tight')
