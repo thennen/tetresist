@@ -1,241 +1,518 @@
+'''
+Attempt to implement a different mode of filament growth, where the filament
+grows from the bottom electrode pixel-by-pixel with probability a function of
+the local electric field.
+
+
+todo
+
+diagonal growth?  maybe encourages splitting
+keep connection matrix in memory and make modifications on pixel toggles
+'''
 import numpy as np
+import matplotlib as mpl
 from matplotlib import pyplot as plt
+from time import time
+import pickle
+from scipy.sparse import coo_matrix
+import matplotlib.animation as animation
+from scipy.sparse.linalg import spsolve
+import os
 
-kT = 0.026
-f0 = 10**13
-# not used yet
-#desorb_Eb = .3
-#diffuse_Eb = .15
-#_Eb = .35
-#alpha = .5
-#beta = .5
+class fractal():
+    def __init__(self, h=20, w=20, R1=10000, R2=10):
+        self.R1 = float(R1)
+        self.R2 = float(R2)
+        self.h = h
+        self.w = w
+        self.log = []
+        self.mat = np.zeros((h, w), dtype=bool)
+        self.f0 = 10**13
+        self.Eb = .3
+        self.beta = 2
+        self.kT = 0.026
 
-t = tetresist(50, 100, R1=10000, R2=1)
-V_wfm = [0]
-#V_wfm = np.concatenate(([0], 5*np.ones(100),[0]))
-#duration = .00000004
-#t_wfm = np.linspace(0, duration, len(V_wfm))
-t_wfm = [0]
+        # Updated every step
+        self.time = [0]
 
-I = [0]
-R = []
-IVtime = [0]
-time = [0]
-step = [0]
-current_time = 0
+        # Updated every compute()
+        self.iv = iv()
+        self.compute()
 
-
-def V(t):
-    ''' calculate voltage at some time '''
-    return np.interp(t, t_wfm, V_wfm)
-    # return np.interp(t, t_wfm, V_wfm, left=0, right=0)
-
-
-def spawnloc():
-    # randn = np.random.normal(t.w/2., t.w/6.)
-    randint = np.random.randint(t.w * .1, t.w * .9)
-    # return (-4, int(randn))
-    return (-4, randint)
+        self._bottomrow = np.zeros((h, w), dtype=bool)
+        self._bottomrow[-1,:] = True
 
 
-def tetrafield(tetra):
-    ''' return average field in x and y direction for tetra '''
-    # Create field above to push pieces down, otherwise wrap happens
-    # E_above = (0.1, 0)
-    E_above = (V(current_time) / t.h, 0)
-    o = list(tetra.occupied)
-    leno = len(o)
-    pos = [p for p in o if p[0] >= 0]
-    lenp = len(pos)
-    Ex_avg = (np.sum(t.Ex[zip(*pos)]) + (leno - lenp)*E_above[0]) / leno
-    Ey_avg = (np.sum(t.Ey[zip(*pos)]) + (leno - lenp)*E_above[1]) / leno
-    return Ex_avg, Ey_avg
+    def __repr__(self):
+        return '{}x{} fractal instance'.format(self.h, self.w)
+
+    def toggle(self, (i, j)):
+        ''' Toggle pixel i, j '''
+        self.mat[i, j] = not self.mat[i, j]
+        self.log.append((i,j))
+        # update matrix for laplace calculation?
+
+    def neighbormask(self):
+        ''' Return boolean mask of neighbors '''
+        # Could use np.roll if you want to wrap left-right
+        right = np.pad(self.mat, ((0,0), (1,0)), mode='constant')[:, :-1]
+        left = np.pad(self.mat, ((0,0), (0,1)), mode='constant')[:, 1:]
+        top = np.pad(self.mat, ((1,0), (0,0)), mode='constant')[:-1, :]
+        bottom = np.pad(self.mat, ((0,1), (0,0)), mode='constant')[1:, :]
+
+        # Include diagonal neigbors
+        topleft = np.pad(self.mat, ((1,0), (0,1)), mode='constant')[:-1, 1:]
+        topright = np.pad(self.mat, ((1,0), (1,0)), mode='constant')[:-1, :-1]
+        bottomright = np.pad(self.mat, ((0,1), (1,0)), mode='constant')[1:, :-1]
+        bottomleft = np.pad(self.mat, ((0,1), (0,1)), mode='constant')[1:, 1:]
+
+        neighbors = (right | left | top | bottom | topleft | topright | bottomright | bottomleft | self._bottomrow) & ~self.mat
+
+        #neighbors = (right | left | top | bottom | self._bottomrow) & ~self.mat
+
+        return neighbors
+
+    def choose_pixel(self):
+        ''' Calculate transition rates, return pixel to toggle, and time step'''
+        nmask = self.neighbormask()
+        Emag = self.Emag[nmask]
+        gamma = self.f0 * np.exp(-(self.Eb - self.beta * Emag) / self.kT)
+        gamma_sum = np.sum(gamma)
+        dt = - 1 / gamma_sum * np.log(np.random.rand())
+        p = gamma / gamma_sum
+        togglen = np.random.choice(np.arange(len(gamma)), p=p)
+        i, j = np.where(nmask)
+        pix = (i[togglen], j[togglen])
+
+        return pix, dt
+
+    def step(self):
+        pix, dt = self.choose_pixel()
+        self.toggle(pix)
+        self.time.append(self.time[-1] + dt)
+
+    def toggle_next(self):
+        ''' Calculate all transition rates, generate time step, toggle some location'''
+        nmask = self.neighbormask()
+        Emag = self.Emag[nmask]
+        gamma = self.f0 * np.exp(-(self.Eb - self.beta * Emag) / self.kT)
+        gamma_sum = np.sum(gamma)
+        dt = - 1 / gamma_sum * np.log(np.random.rand())
+        self.time.append(self.time[-1] + dt)
+        p = gamma / gamma_sum
+        togglen = np.random.choice(np.arange(len(gamma)), p=p)
+        # How to find index of that choice?
+        # This is not the best way.
+        i, j = np.where(nmask)
+        self.toggle(i[togglen], j[togglen])
+
+        return gamma, dt, (i[togglen], j[togglen])
 
 
-def tetrapower(tetra):
-    ''' return average power at tetra location'''
-    o = list(tetra.occupied)
-    P_avg = np.sum(t.P[zip(*o)])/len(o)
-    return P_avg
+    def compute(self, V_contact=1):
+        # TODO: put full compute code in here
+        computed = solve(self.resist(), V_contact)
+
+        self.V_contact = V_contact
+        self.V = computed['V']
+        self.R = computed['R']
+        self.I = computed['I']
+        self.Ix = computed['Ix']
+        self.Iy = computed['Iy']
+        self.I_mag = computed['I_mag']
+        self.P = computed['P']
+        self.Emag = computed['E']
+        self.Ex = computed['Ex']
+        self.Ey = computed['Ey']
+
+        self.iv.t.append(self.time[-1])
+        if len(self.iv.I) == 0:
+            self.iv.I.append(0)
+            self.iv.V.append(0)
+        else:
+            self.iv.I.append(self.I)
+            self.iv.V.append(V_contact)
+        self.iv.R.append(self.R)
+
+    def plot_neighbors(self, ax=None, **kwargs):
+        if ax is None:
+            ax = plt.gca()
+        image = np.where(self.neighbormask(), True, np.nan)
+        ax.imshow(image, interpolation='nearest', **kwargs)
+        plt.draw()
 
 
-def move_with_field((Ex, Ey), tetranum=-1):
-    beta = 0.52
-    Eb = 0.5
-    kT = 0.026
-    up = (-1, 0)
-    p_up = np.exp(-(Eb + beta * Ex)/kT)
-    down = (1, 0)
-    p_down = np.exp(-(Eb - beta * Ex)/kT)
-    left = (0, -1)
-    p_left = np.exp(-(Eb + beta * Ey)/kT)
-    right = (0, 1)
-    p_right = np.exp(-(Eb - beta * Ey)/kT)
+    def plot(self, hue=None, ax=None, hl=None, **kwargs):
+        ''' Plot current state of the field '''
+        image = np.where(self.mat, 1, np.nan)
+        if hue is not None:
+            image = image * hue
 
-    m = [up, down, left, right]
-    p = np.array([p_up, p_down, p_left, p_right])
-    p /= np.sum(p)
+        if ax is None:
+            ax = plt.gca()
+        ax.imshow(image, interpolation='nearest', **kwargs)
+        ax.yaxis.set_ticklabels([])
+        ax.xaxis.set_ticklabels([])
+        ax.xaxis.set_ticks([])
+        ax.yaxis.set_ticks([])
+        plt.draw()
 
-    move = np.random.choice((0, 1, 2, 3), p=p)
-    return t.move(*m[move])
-    # print('move {}'.format(['up','down','left','right'][move]))
+        return ax
+
+    def plotP(self, ax=None, log=False, cmap='hot', interpolation='none', **kwargs):
+        ''' plot the power '''
+        if ax is None:
+            ax = plt.gca()
+        if log:
+            ax.imshow(np.log(self.P), cmap=cmap, interpolation=interpolation, **kwargs)
+        else:
+            ax.imshow(self.P, cmap=cmap, interpolation=interpolation, **kwargs)
+
+    def plotI(self, ax=None, cmap='hot', interpolation='none', **kwargs):
+        ''' plot the current '''
+        if ax is None:
+            ax = plt.gca()
+        ax.imshow(self.I_mag, cmap=cmap, interpolation=interpolation, **kwargs)
+
+    def plotV(self, ax=None, cmap='hot', interpolation='none', **kwargs):
+        ''' plot the voltage '''
+        if ax is None:
+            ax = plt.gca()
+        ax.imshow(self.V, cmap=cmap, interpolation=interpolation, **kwargs)
+
+    def plotI_vect(self, ax=None, **kwargs):
+        ''' plot vector field of current'''
+        if ax is None:
+            ax = plt.gca()
+        X, Y = np.meshgrid(range(self.h), range(self.w), indexing='ij')
+        ax.streamplot(Y, X, self.Iy, self.Ix, **kwargs)
+
+    def plotE_vect(self, ax=None, **kwargs):
+        ''' plot vector field of E'''
+        if ax is None:
+            ax = plt.gca()
+        X, Y = np.meshgrid(range(self.h), range(self.w), indexing='ij')
+        ax.streamplot(Y, X, self.Ey, self.Ex, **kwargs)
+
+    def plotE(self, ax=None, cmap='hot', interpolation=None, **kwargs):
+        ''' plot the electric field magnitude'''
+        if ax is None:
+            ax = plt.gca()
+        ax.imshow(self.Emag, cmap=cmap, interpolation=interpolation, **kwargs)
+
+    def resist(self):
+        return np.where(self.mat, self.R2, self.R1)
+
+    def write(self, fp='fractal.pickle'):
+        if os.path.isfile(fp):
+            print('File already exists.')
+        else:
+            with open(fp, 'w') as f:
+                pickle.dump(self, f)
+                print('Dumped pickle to\n' + fp)
 
 
-def do_something():
-    ''' calculate all rate parameters and decide to do something.  return dt '''
-    # Probably very slow
+class iv(object):
+    ''' Just a little container class for IV data '''
+    def __init__(self):
+        self.t = []
+        self.I = []
+        self.V = []
+        self.R = []
 
-    # Flag to decide whether to recompute voltages
-    compute = False
+    def plot(self):
+        fig, ax = plt.subplots()
+        ax.plot(self.V, self.I, '.-', c='SteelBlue')
 
-    E_electrode = t.Ex[0]
-    spawn_Eb = .3 - .1 * E_electrode
-    move_Eb = .15
-    reduced_Eb = .35
-    beta = .5
 
-    Ex = []
-    Ey = []
-    Eb = []
-    for tet in t.tetras:
-        E = tetrafield(tet)
-        Ex.append(E[0])
-        Ey.append(E[1])
-        Eb.append(tet.Eb)
+# TODO:  Find a way to generate matrices more quickly by storing previous one
+# and making modifications
+# also make another version which wraps in the horizontal direction
 
-    Ex = np.array(Ex)
-    Ey = np.array(Ey)
+def solve(R, V_contact=1):
+    ''' Compute currents and voltage of mesh of resistors. Top electrode at 0V '''
+    t0 = time()
+    out = dict()
 
-    gamma_left = f0 * np.exp(-(Eb + beta * Ey) / kT)
-    gamma_right = f0 * np.exp(-(Eb - beta * Ey) / kT)
-    gamma_up = f0 * np.exp(-(Eb + beta * Ex) / kT)
-    gamma_down = f0 * np.exp(-(Eb - beta * Ex) / kT)
-    gamma_spawn = f0 * np.exp(-spawn_Eb / kT)
-    gamma = np.concatenate((gamma_left, gamma_right, gamma_up, gamma_down, gamma_spawn))
-    gamma_sum = np.sum(gamma)
-    dt = - 1 / gamma_sum * np.log(np.random.rand())
-    p = gamma / gamma_sum
+    m, n = np.shape(R)
 
-    ntetras = len(t.tetras)
-    if ntetras == 0:
-        t.spawn(loc=spawnloc())
-        t.tetras[-1].Eb = move_Eb
-        return dt, compute
+    # Put some contacts on top and bottom
+    contact_R = 0
+    contact = contact_R * np.ones((1, n))
+    R = np.vstack(( contact, R, contact ))
+    m = m + 2
 
-    something = np.random.choice(range(len(gamma)), p=p)
-    direction = something / ntetras
-    tetranum = something % ntetras
-    if direction > 3:
-        # spawn new tetra
-        t.spawn(loc=(-4, something - ntetras * 4))
-        t.tetras[-1].Eb = move_Eb
+    Adim =(n-1)*(m-1) + 1
+
+    row = []
+    col = []
+    element = []
+
+    def add_element(r, c, elem):
+        row.append(r)
+        col.append(c)
+        element.append(elem)
+
+    for i in range(m-1):
+        for j in range(n-1):
+            # Loop numbers
+            k = i * (n - 1) + j
+            k_above = k - (n - 1)
+            k_below = k + (n - 1)
+            k_left = k - 1
+            k_right = k + 1
+
+            R_above = (R[i, j] + R[i, j+1]) / 2
+            R_below = (R[i+1, j] + R[i+1, j+1]) / 2
+            R_left = (R[i, j] + R[i+1, j]) / 2
+            R_right = (R[i, j+1] + R[i+1, j+1]) / 2
+
+            top = i == 0
+            bottom = i == m-2
+            left = j == 0
+            right = j == n-2
+
+            if top and left:
+                add_element(k, k, R_above + R_right + R_left + R_below)
+                add_element(k, k_below, -R_below)
+                add_element(k, k_right, -R_right)
+                add_element(k, Adim-1, -R_left)
+            elif top and right:
+                add_element(k, k, R_above + R_right + R_left + R_below)
+                add_element(k, k_below, -R_below)
+                add_element(k, k_left, -R_left)
+            elif bottom and left:
+                add_element(k, k, R_above + R_right + R_left + R_below)
+                add_element(k, k_above, -R_above)
+                add_element(k, k_right, -R_right)
+                add_element(k, Adim-1, -R_left)
+            elif bottom and right:
+                add_element(k, k, R_above + R_right + R_left + R_below)
+                add_element(k, k_above, -R_above)
+                add_element(k, k_left, -R_left)
+            elif top:
+                add_element(k, k, R_above + R_right + R_left + R_below)
+                add_element(k, k_below, -R_below)
+                add_element(k, k_left, -R_left)
+                add_element(k, k_right, -R_right)
+            elif bottom:
+                add_element(k, k, R_above + R_right + R_left + R_below)
+                add_element(k, k_above, -R_above)
+                add_element(k, k_left, -R_left)
+                add_element(k, k_right, -R_right)
+            elif left:
+                add_element(k, k, R_above + R_right + R_left + R_below)
+                add_element(k, k_above, -R_above)
+                add_element(k, k_below, -R_below)
+                add_element(k, k_right, -R_right)
+                add_element(k, Adim-1, -R_left)
+            elif right:
+                add_element(k, k, R_above + R_right + R_left + R_below)
+                add_element(k, k_above, -R_above)
+                add_element(k, k_below, -R_below)
+                add_element(k, k_left, -R_left)
+            else:
+                add_element(k, k, R_above + R_right + R_left + R_below)
+                add_element(k, k_above, -R_above)
+                add_element(k, k_below, -R_below)
+                add_element(k, k_left, -R_left)
+                add_element(k, k_right, -R_right)
+
+    # Put V_contact across top and bottom
+    for i in range(m-1):
+        R_edge = (R[i, 0] + R[i+1, 0]) / 2
+        k = i * (n - 1)
+        add_element(Adim-1, k, -R_edge)
+        add_element(Adim-1, Adim-1, R_edge)
+    b = np.zeros(Adim)
+    b[-1] = V_contact
+
+    #t1 = time()
+    #print('Time to generate matrix {}'.format(t1 - t0))
+
+    A = coo_matrix((element, (row, col)), shape=(Adim, Adim))
+    A = A.tocsr()
+
+    #t2 = time()
+    #print('Time to generate sparse matrix {}'.format(t2 - t1))
+
+    x = spsolve(A, b)
+
+    #t3 = time()
+    #print('Time to solve sparse matrix equation {}'.format(t3 - t2))
+
+    # Calculate node currents from loop currents
+    I_loop = x[:-1].reshape((m-1, n-1))
+    I_vert = np.hstack((x[-1]*np.ones((m-1, 1)), I_loop)) - np.hstack((I_loop, np.zeros((m-1, 1))))
+    #zero_hor = np.zeros(1, n-1)
+    #I_hor = np.vstack(zero_hor, I_loop) - np.vstack(I_loop, zero_hor)
+    I_hor = np.vstack((I_loop[0], np.diff(I_loop, axis=0), I_loop[-1]))
+    R_vert = R[:-1, :] / 2. + R[1:, :] / 2.
+    #I_node_vert = np.vstack((I_vert[0], np.diff(I_vert, axis=0), I_vert[-1]))
+    #I_node_hor = np.hstack((I_hor[:, [0]], np.diff(I_hor, axis=1), I_hor[:, [-1]]))
+    #I_vect = np.dstack((I_node_vert, I_node_hor))
+
+    I_node_vert = np.vstack((I_vert[0], I_vert[:-1]/2 + I_vert[1:]/2, I_vert[-1]))
+    I_node_hor = np.hstack((I_hor[:,[0]], I_hor[:,:-1]/2 + I_hor[:,1:]/2, I_hor[:,[-1]]))
+    I_squared_vert = np.vstack((I_vert[0]**2, I_vert[:-1]**2 + I_vert[1:]**2, I_vert[-1]**2))
+    I_squared_hor = np.hstack((I_hor[:,[0]]**2, I_hor[:,:-1]**2 + I_hor[:,1:]**2, I_hor[:,[-1]]**2))
+    I_squared = I_squared_vert + I_squared_hor
+    I_mag = np.sqrt(I_squared)
+    P = I_squared * R/2.
+
+    # Total current at 1V
+    I_tot = np.sum(I_vert[0])
+    R_tot = V_contact/I_tot
+
+    # Calculate voltages from vertical currents
+    V = V_contact + np.vstack((np.zeros((1, n)), np.cumsum(-I_vert * R_vert, axis=0)))
+
+    # Electric field
+    E = np.gradient(-V)
+    Ex = E[0]
+    Ey = E[1]
+    E_mag = np.sqrt(Ex**2 + Ey**2)
+
+    out['V'] = V[1:-1,:]
+    out['R'] = R_tot
+    out['I'] = I_tot
+    out['Ix'] = I_node_vert[1:-1,:]
+    out['Iy'] = I_node_hor[1:-1,:]
+    out['I_mag'] = I_mag[1:-1,:]
+    out['P'] = P[1:-1,:]
+    out['E'] = E_mag[1:-1,:]
+    out['Ex'] = Ex[1:-1,:]
+    out['Ey'] = Ey[1:-1,:]
+
+    #t4 = time()
+    #print('Time to get all parameters out of solution {}'.format(t4 - t3))
+
+    return out
+
+'''
+check this paper
+DOI 10.1002/adma.201301113
+pablo stoliar, marcelo rozenberg
+'''
+class rerun(fractal):
+    ''' Use history of another instance to rerun simulation '''
+    def __init__(self, parent, start=0):
+        fractal.__init__(self, h=parent.h, w=parent.w, R1=parent.R1, R2=parent.R2)
+        self.commands = parent.log
+        self.frame = 0
+        self.next(start)
+
+    def next(self, numframes=1):
+        # Execute numframes of history
+        for p in self.commands[self.frame:self.frame + numframes]:
+            self.toggle(p)
+        self.frame += numframes
+        return 0 if self.frame > len(self.commands) else 1
+
+def movie(game, interval=0.1, skipframes=0, start=0):
+    ''' TODO: generate everything before animation somehow '''
+    t = rerun(game, start=start)
+    def data_gen():
+        while t.frame < len(t.commands):
+            yield t
+            t.next(1+skipframes)
+
+    def run(data):
+        try:
+            del ax.images[0]
+        except:
+            pass
+        data.plot(ax=ax)
+        #data.compute()
+        #data.plotV(alpha=0.3)
+        return ax.images
+
+    #Writer = animation.writers['ffmpeg']
+    #writer = Writer(fps=150, metadata=dict(artist='Me'), bitrate=3000)
+    fig, ax = plt.subplots()
+    #t.plot(ax=ax)
+    #ax.hlines(3.5, -0.5, game.w, linestyles='dashed', zorder=10)
+    #spawn = np.zeros((game.h, game.w))
+    #spawn[0:4, :] = 1
+    #ax.imshow(spawn, alpha=.3, cmap='gray_r', interpolation='none')
+    #plt.pause(.3)
+
+    ani = animation.FuncAnimation(fig, run, data_gen, blit=True, interval=interval, save_count=5000)
+    #ani.save('movie.mp4', writer=writer)
+    return ani
+
+def write_frames(fractal, dir, skipframes=0, start=0, dV=None, writeloop=True):
+    '''
+    Write a bunch of pngs to directory for movie.
+    Step frames by voltage
+    basically so you don't capture a ton of frames where nothing is happening
+    TODO: step by voltage OR current, so you don't miss any good frames
+    '''
+    plt.ioff()
+
+    if dV is None:
+        ind = np.arange(start, len(fractal.log), skipframes + 1)
     else:
-        # If reduced piece moved, consider it oxidized
-        if t.tetras[tetranum].Eb == reduced_Eb:
-            t.tetras[tetranum].Eb = move_Eb
-            compute = True
+        # Determine frames to save
+        vsteps = np.cumsum(np.abs(np.diff(fractal.iv.V)))
+        gp = groupby(enumerate(vsteps), lambda vs: int(vs[1]/dV))
+        ind = [0]
+        ind.extend([g.next()[0] + 1 for k,g in gp])
 
-        # move existing tetra
-        if direction == 3:
-            m = t.move(1, 0, tetranum=tetranum)
-        elif direction == 2:
-            m = t.move(-1, 0, tetranum=tetranum)
-        elif direction == 1:
-            m = t.move(0, 1, tetranum=tetranum)
-        elif direction == 0:
-            m = t.move(0, -1, tetranum=tetranum)
+    if not os.path.isdir(dir):
+        os.makedirs(dir)
 
+    r = rerun(fractal, start=start)
+    def data_gen():
+        for di in np.diff(ind):
+            yield r
+            if not r.next(di):
+                return
 
-        if m:
-            # hit something
-            if direction == 3 and m[0] == -1:
-                # hit bottom
-                t.tetras[tetranum].Eb = reduced_Eb
-                compute = True
+    if writeloop:
+        fig = plt.figure(figsize=(8,8))
+        ax1 = fig.add_subplot(211)
+        ax2 = fig.add_subplot(212)
+        ax2.set_xlabel('V')
+        ax2.set_ylabel('I')
+        # Plot loops for autorange
+        ax2.plot(fractal.iv.V, fractal.iv.I)
+        ax2.scatter(0,0)
+        #del ax2.lines[0]
+    else:
+        fig = plt.figure(figsize=(8,6))
+        ax1 = fig.add_subplot(111)
 
-            if m[0] != -1:
-                # hit tetra
-                if t.tetras[m[0]].Eb == reduced_Eb:
-                    # hit reduced tetra
-                    t.tetras[tetranum].Eb = reduced_Eb
-                    compute = True
+    length = len(ind)
+    for i, d in enumerate(data_gen()):
+        d.compute()
+        ax1.cla()
+        d.plotE(cmap='plasma', ax=ax1, vmin=0, vmax=.04)
+        fcmap = truncate_colormap(plt.cm.inferno, .2, 1.0)
+        d.plot(hue=d.I_mag, cmap=fcmap, ax=ax1, vmin=0, vmax=0.00222)
+        if writeloop:
+            del ax2.lines[0]
+            del ax2.collections[0]
+            Vloop = d.iv.V[:ind[i]]
+            Iloop = d.iv.I[:ind[i]]
+            if len(Vloop) == 0:
+                Vloop = [0]
+                Iloop = [0]
+            ax2.plot(Vloop, Iloop, c='SteelBlue', alpha=.8)
+            ax2.scatter(Vloop[-1], Iloop[-1], c='black', zorder=2)
+        fn = os.path.join(dir, 'frame{:0>4d}.png'.format(i))
+        fig.savefig(fn, bbox_inches='tight')
+        print('Wrote {}/{}: {}'.format(i, length, fn))
 
-    return (dt, compute)
+    plt.close(fig)
+    # Send command to create video with ffmpeg
+    #os.system(r'ffmpeg -framerate 30 -i loop%04d.png -c:v libx264 -r 30 -pix_fmt yuv420p out.mp4')
 
-def preview():
-    ''' do a plot showing state of system '''
-    ax1.cla()
-    t.plot(hue=t.I_mag, cmap='Reds', ax=ax1)
-    t.plotV(alpha=.4, cmap='Blues', ax=ax1)
-    #t.plotE_vect(ax=ax1)
-    ax1.set_title('V = {:.4e}, t = {:.4e}'.format(V(current_time), current_time))
-    #ax2.cla()
-    #ax2.plot(t.Ex[0])
-    #ax2.plot(t.Ex[1])
-    plt.draw()
-    plt.show()
-    plt.pause(.1)
+    plt.ion()
 
-t.compute(V_contact=1)
-#I.append(0)
-R.append(t.R)
+def truncate_colormap(cmap, minval=0.0, maxval=1.0, n=100):
+    new_cmap = mpl.colors.LinearSegmentedColormap.from_list(
+        'trunc({n},{a:.2f},{b:.2f})'.format(n=cmap.name, a=minval, b=maxval),
+        cmap(np.linspace(minval, maxval, n)))
+    return new_cmap
 
-fig1, ax1 = plt.subplots()
-# fig2, ax2 = plt.subplots()
-preview()
-
-
-def pulse(v=[0, 5, 0, -5, 0], duration=1e-3):
-    ''' Apply a voltage pulse to t '''
-    # TODO: Maybe add some stop condition
-    global current_time
-    t0 = current_time
-    V_wfm.extend(v)
-    t_wfm.extend(np.linspace(t0, t0 + duration, len(v)))
-    i = 0
-    while current_time - t0 < duration:
-        # Save some stuff
-        dt, compute = do_something()
-        current_time += dt
-        time.append(current_time)
-        V_contact=V(current_time)
-        if compute or i % 10 == -1:
-            # compute sometimes
-            t.compute(V_contact=V_contact)
-            I.append(t.I)
-            R.append(t.R)
-            IVtime.append(time[-1])
-        if i % 500 == 0:
-            preview()
-        print('Time: {:.3e} s'.format(time[-1]))
-        print('V_contact: {:.3e} V'.format(V_contact))
-        print('R: {:.3e} Ohms'.format(R[-1]))
-        print('Tetras: {}'.format(len(t.tetras)))
-        i += 1
-    t.compute()
-    preview()
-
-
-
-'''
-t.compute(V_contact=1)
-#while not t.gameover:
-while len(t.tetras) < 1000:
-    print('spawning tetra {}'.format(len(t.tetras)+1))
-    t.spawn(loc=spawnloc())
-    # Move along field until stop moving
-    # Stop when tetra hits another in any direction, or tetra hits top or bottom
-    stopwhen = (0, 2)
-    while move_with_field(tetrafield(t.tetras[-1])) not in stopwhen:
-        #t.plot()
-        #plt.pause(.01)
-        pass
-    t.compute()
-    #t.plotE_vect()
-    #V.append(t.V_contact)
-    I.append(t.I)
-#plt.figure()
-#plt.plot(V, I)
-plt.figure()
-t.plot()
-'''

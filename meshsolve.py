@@ -1,6 +1,9 @@
 import numpy as np
 from scipy.sparse import coo_matrix
 from scipy.sparse.linalg import spsolve
+# TODO:  Find a way to generate matrices more quickly by storing previous one
+# and making modifications
+# also make another version which wraps in the horizontal direction
 
 def solve(R, V_contact=1):
     ''' Compute currents and voltage of mesh of resistors. Top electrode at 0V '''

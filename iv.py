@@ -5,17 +5,12 @@ from itertools import groupby
 import os
 
 # TODO:
-#       better plots for preview
 #       wrap horizontal
 #       filter IV loop to simulate measurement
-#       Detached volumes of metal should not reduce impacting pieces
 #       Detect switching and change sweep direction
 #       input rate instead of time
-#       Identify frame with IV loop
-#       Make frames of movie by voltage step, include IV loop
-#       Stop?
-#       Save energy barriers
 #       Use real units
+#       Stop program halt due to trapped pieces
 
 
 # not used yet
@@ -368,7 +363,7 @@ def write_frames(dir, skipframes=0, start=0, dV=.01, writeloop=True):
     for i, d in enumerate(data_gen()):
         d.compute()
         ax1.cla()
-        d.Eplot(alpha=.2, cmap='Oranges', ax=ax1)
+        d.plotE(alpha=.2, cmap='Oranges', ax=ax1)
         d.plot(hue=d.I_mag, cmap='Reds', ax=ax1)
         if writeloop:
             del ax2.lines[0]
@@ -389,8 +384,6 @@ def write_frames(dir, skipframes=0, start=0, dV=.01, writeloop=True):
     #os.system(r'ffmpeg -framerate 30 -i loop%04d.png -c:v libx264 -r 30 -pix_fmt yuv420p out.mp4')
 
     plt.ion()
-
-
 
 
 if __name__ == '__main__':
