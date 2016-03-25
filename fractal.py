@@ -29,6 +29,8 @@ class fractal():
         self.f0 = 10**13
         self.Eb = .3
         self.beta = 2
+        # factor for power -> temperature
+        self.alpha = 10**6
         self.kT = 0.026
 
         # Updated every step
@@ -105,12 +107,27 @@ class fractal():
 
     def choose_pixel(self):
         ''' Calculate transition rates, return pixel to toggle, and time step'''
-        nmask = self.neighbormask()
-        Emag = self.Emag[nmask]
+        #nmask = self.neighbormask()
+        #Emag = self.Emag[nmask]
         # Boltzmann
         #gamma = self.f0 * np.exp(-(self.Eb - self.beta * Emag) / self.kT)
         # Power law
-        gamma = Emag**self.beta
+        #gamma = Emag**self.beta
+        (u_a, u_b, u_l, u_r), (o_a, o_b, o_l, o_r) = self.neighbor_masks()
+
+        def gammafunc(E):
+            return self.f0 * np.exp(-(self.Eb - self.beta * E) / (self.kT + self.alpha * self.P))
+        gamma_mat = (u_a * gammafunc(self.Ex) +
+                     u_b * gammafunc(-self.Ex) +
+                     u_r * gammafunc(-self.Ey) +
+                     u_l * gammafunc(self.Ey) +
+                     o_a * gammafunc(-self.Ex) +
+                     o_b * gammafunc(self.Ex) +
+                     o_r * gammafunc(self.Ey) +
+                     o_l * gammafunc(-self.Ey) )
+        nmask = u_a | u_b | u_r | u_l | o_a | o_b | o_r | o_l
+        gamma = gamma_mat[nmask]
+
         gamma_sum = np.sum(gamma)
         dt = - 1 / gamma_sum * np.log(np.random.rand())
         p = gamma / gamma_sum
@@ -419,11 +436,6 @@ def solve(R, V_contact=1):
 
     return out
 
-'''
-check this paper
-DOI 10.1002/adma.201301113
-pablo stoliar, marcelo rozenberg
-'''
 class rerun(fractal):
     ''' Use history of another instance to rerun simulation '''
     def __init__(self, parent, start=0):
