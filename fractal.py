@@ -6,7 +6,6 @@ the local electric field.
 
 todo
 
-diagonal growth?  maybe encourages splitting
 keep connection matrix in memory and make modifications on pixel toggles
 '''
 import numpy as np
@@ -41,6 +40,7 @@ class fractal():
 
         self._bottomrow = np.zeros((h, w), dtype=bool)
         self._bottomrow[-1,:] = True
+        self.growdiag = False
 
 
     def __repr__(self):
@@ -55,28 +55,62 @@ class fractal():
     def neighbormask(self):
         ''' Return boolean mask of neighbors '''
         # Could use np.roll if you want to wrap left-right
-        right = np.pad(self.mat, ((0,0), (1,0)), mode='constant')[:, :-1]
-        left = np.pad(self.mat, ((0,0), (0,1)), mode='constant')[:, 1:]
-        top = np.pad(self.mat, ((1,0), (0,0)), mode='constant')[:-1, :]
-        bottom = np.pad(self.mat, ((0,1), (0,0)), mode='constant')[1:, :]
 
-        # Include diagonal neigbors
-        topleft = np.pad(self.mat, ((1,0), (0,1)), mode='constant')[:-1, 1:]
-        topright = np.pad(self.mat, ((1,0), (1,0)), mode='constant')[:-1, :-1]
-        bottomright = np.pad(self.mat, ((0,1), (1,0)), mode='constant')[1:, :-1]
-        bottomleft = np.pad(self.mat, ((0,1), (0,1)), mode='constant')[1:, 1:]
+        pad = np.pad(self.mat, ((1, 1), (1, 1)), mode='constant')
+        right = pad[1:-1, :-2]
+        left = pad[1:-1, 2:]
+        bottom = pad[:-2, 1:-1]
+        top = pad[2:, 1:-1]
 
-        neighbors = (right | left | top | bottom | topleft | topright | bottomright | bottomleft | self._bottomrow) & ~self.mat
+        #neighbors = (right | left | bottom | top | self._toprow) & ~self.mat
 
-        #neighbors = (right | left | top | bottom | self._bottomrow) & ~self.mat
+        if self.growdiag:
+            # Include diagonal neighbors
+            bottomleft = pad[:-2, 2:]
+            bottomright = pad[:-2, :-2]
+            topright = pad[2:, :-2]
+            topleft = pad[2:, 2:]
+
+            neighbors = (right | left | top | bottom | topleft | topright | bottomright | bottomleft | self._bottomrow) & ~self.mat
+        else:
+            neighbors = (right | left | top | bottom | self._bottomrow) & ~self.mat
 
         return neighbors
+
+    def neighbor_masks(self):
+        ''' Return boolean mask for empty neighbor pixels, and occupied pixels
+        which have neighbors, separate masks for each direction'''
+        pad = np.pad(self.mat, ((1, 1), (1, 1)), mode='constant')
+        right = pad[1:-1, :-2]
+        left = pad[1:-1, 2:]
+        bottom = pad[:-2, 1:-1]
+        top = pad[2:, 1:-1]
+
+        #u is for unoccupied
+        #u_above means a 0 pixel is above a 1 pixel
+        u_above = (top | self._bottomrow) & ~self.mat
+        u_below = bottom & ~self.mat
+        u_left = left & ~self.mat
+        u_right = right & ~self.mat
+
+        #o is for occupied
+        #o_above means a 1 pixel is above a 0 pixel
+        o_above = ~top & self.mat & ~self._bottomrow
+        o_below = ~bottom & self.mat
+        o_left = ~left & self.mat
+        o_right = ~right & self.mat
+
+        # (up, down, left, right)
+        return ((u_above, u_below, u_left, u_right), (o_above, o_below, o_left, o_right))
 
     def choose_pixel(self):
         ''' Calculate transition rates, return pixel to toggle, and time step'''
         nmask = self.neighbormask()
         Emag = self.Emag[nmask]
-        gamma = self.f0 * np.exp(-(self.Eb - self.beta * Emag) / self.kT)
+        # Boltzmann
+        #gamma = self.f0 * np.exp(-(self.Eb - self.beta * Emag) / self.kT)
+        # Power law
+        gamma = Emag**self.beta
         gamma_sum = np.sum(gamma)
         dt = - 1 / gamma_sum * np.log(np.random.rand())
         p = gamma / gamma_sum
@@ -91,23 +125,19 @@ class fractal():
         self.toggle(pix)
         self.time.append(self.time[-1] + dt)
 
-    def toggle_next(self):
-        ''' Calculate all transition rates, generate time step, toggle some location'''
-        nmask = self.neighbormask()
-        Emag = self.Emag[nmask]
-        gamma = self.f0 * np.exp(-(self.Eb - self.beta * Emag) / self.kT)
-        gamma_sum = np.sum(gamma)
-        dt = - 1 / gamma_sum * np.log(np.random.rand())
-        self.time.append(self.time[-1] + dt)
-        p = gamma / gamma_sum
-        togglen = np.random.choice(np.arange(len(gamma)), p=p)
-        # How to find index of that choice?
-        # This is not the best way.
-        i, j = np.where(nmask)
-        self.toggle(i[togglen], j[togglen])
+    def points(self):
+        ''' return boolean mask of point locations '''
+        pad = np.pad(self.mat, ((1, 1), (1, 1)), mode='constant')
+        right = pad[1:-1, :-2].astype(np.int8)
+        left = pad[1:-1, 2:].astype(np.int8)
+        bottom = pad[:-2, 1:-1].astype(np.int8)
+        top = pad[2:, 1:-1].astype(np.int8)
 
-        return gamma, dt, (i[togglen], j[togglen])
+        pointmask = (self.mat + right + left + bottom + top == 2) & self.mat
+        # Bottom row doesn't count
+        pointmask = pointmask & ~self._bottomrow
 
+        return pointmask
 
     def compute(self, V_contact=1):
         # TODO: put full compute code in here
@@ -441,7 +471,7 @@ def movie(game, interval=0.1, skipframes=0, start=0):
     #ani.save('movie.mp4', writer=writer)
     return ani
 
-def write_frames(fractal, dir, skipframes=0, start=0, dV=None, writeloop=True):
+def write_frames(fractal, dir, skipframes=0, start=0, dV=None, writeloop=True, plotE=True, cmap=None, **kwargs):
     '''
     Write a bunch of pngs to directory for movie.
     Step frames by voltage
@@ -449,6 +479,8 @@ def write_frames(fractal, dir, skipframes=0, start=0, dV=None, writeloop=True):
     TODO: step by voltage OR current, so you don't miss any good frames
     '''
     plt.ioff()
+    if cmap is None:
+        cmap = truncate_colormap(plt.cm.inferno, .2, 1.0)
 
     if dV is None:
         ind = np.arange(start, len(fractal.log), skipframes + 1)
@@ -487,9 +519,10 @@ def write_frames(fractal, dir, skipframes=0, start=0, dV=None, writeloop=True):
     for i, d in enumerate(data_gen()):
         d.compute()
         ax1.cla()
-        d.plotE(cmap='plasma', ax=ax1, vmin=0, vmax=.04)
-        fcmap = truncate_colormap(plt.cm.inferno, .2, 1.0)
-        d.plot(hue=d.I_mag, cmap=fcmap, ax=ax1, vmin=0, vmax=0.00222)
+        if plotE:
+            d.plotE(cmap='plasma', ax=ax1, vmin=0, vmax=.04)
+
+        d.plot(hue=d.I_mag, cmap=cmap, ax=ax1, vmin=0, vmax=0.00222, **kwargs)
         if writeloop:
             del ax2.lines[0]
             del ax2.collections[0]

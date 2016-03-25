@@ -11,6 +11,7 @@ import os
 #       input rate instead of time
 #       Use real units
 #       Stop program halt due to trapped pieces
+#       Replace "spawn" and "reduced_Eb" to equivalent oxidation_Eb
 
 
 # not used yet
