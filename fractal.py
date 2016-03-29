@@ -16,7 +16,9 @@ import pickle
 from scipy.sparse import coo_matrix
 import matplotlib.animation as animation
 from scipy.sparse.linalg import spsolve
+from itertools import groupby
 import os
+
 
 class fractal():
     def __init__(self, h=20, w=20, R1=10000, R2=10):
@@ -33,7 +35,7 @@ class fractal():
         self.alpha = 10**6
         self.kT = 0.026
 
-        # Updated every step
+        # Updated every self.step()
         self.time = [0]
 
         # Updated every compute()
@@ -41,9 +43,8 @@ class fractal():
         self.compute()
 
         self._bottomrow = np.zeros((h, w), dtype=bool)
-        self._bottomrow[-1,:] = True
+        self._bottomrow[-1, :] = True
         self.growdiag = False
-
 
     def __repr__(self):
         return '{}x{} fractal instance'.format(self.h, self.w)
@@ -51,7 +52,7 @@ class fractal():
     def toggle(self, (i, j)):
         ''' Toggle pixel i, j '''
         self.mat[i, j] = not self.mat[i, j]
-        self.log.append((i,j))
+        self.log.append((i, j))
         # update matrix for laplace calculation?
 
     def neighbormask(self):
@@ -64,7 +65,7 @@ class fractal():
         bottom = pad[:-2, 1:-1]
         top = pad[2:, 1:-1]
 
-        #neighbors = (right | left | bottom | top | self._toprow) & ~self.mat
+        # neighbors = (right | left | bottom | top | self._toprow) & ~self.mat
 
         if self.growdiag:
             # Include diagonal neighbors
@@ -88,31 +89,32 @@ class fractal():
         bottom = pad[:-2, 1:-1]
         top = pad[2:, 1:-1]
 
-        #u is for unoccupied
-        #u_above means a 0 pixel is above a 1 pixel
+        # u is for unoccupied
+        # u_above means a 0 pixel is above a 1 pixel
         u_above = (top | self._bottomrow) & ~self.mat
         u_below = bottom & ~self.mat
         u_left = left & ~self.mat
         u_right = right & ~self.mat
 
-        #o is for occupied
-        #o_above means a 1 pixel is above a 0 pixel
+        # o is for occupied
+        # o_above means a 1 pixel is above a 0 pixel
         o_above = ~top & self.mat & ~self._bottomrow
         o_below = ~bottom & self.mat
         o_left = ~left & self.mat
         o_right = ~right & self.mat
 
         # (up, down, left, right)
-        return ((u_above, u_below, u_left, u_right), (o_above, o_below, o_left, o_right))
+        return ((u_above, u_below, u_left, u_right),
+                (o_above, o_below, o_left, o_right))
 
     def choose_pixel(self):
         ''' Calculate transition rates, return pixel to toggle, and time step'''
-        #nmask = self.neighbormask()
-        #Emag = self.Emag[nmask]
+        # nmask = self.neighbormask()
+        # Emag = self.Emag[nmask]
         # Boltzmann
-        #gamma = self.f0 * np.exp(-(self.Eb - self.beta * Emag) / self.kT)
+        # gamma = self.f0 * np.exp(-(self.Eb - self.beta * Emag) / self.kT)
         # Power law
-        #gamma = Emag**self.beta
+        # gamma = Emag**self.beta
         (u_a, u_b, u_l, u_r), (o_a, o_b, o_l, o_r) = self.neighbor_masks()
 
         def gammafunc(E):
@@ -124,7 +126,7 @@ class fractal():
                      o_a * gammafunc(-self.Ex) +
                      o_b * gammafunc(self.Ex) +
                      o_r * gammafunc(self.Ey) +
-                     o_l * gammafunc(-self.Ey) )
+                     o_l * gammafunc(-self.Ey))
         nmask = u_a | u_b | u_r | u_l | o_a | o_b | o_r | o_l
         gamma = gamma_mat[nmask]
 
@@ -158,28 +160,69 @@ class fractal():
 
     def compute(self, V_contact=1):
         # TODO: put full compute code in here
-        computed = solve(self.resist(), V_contact)
+
+        if V_contact != 0:
+            computed = solve(self.resist(), V_contact)
+            self.V = computed['V']
+            self.I = computed['I']
+            self.Ix = computed['Ix']
+            self.Iy = computed['Iy']
+            self.I_mag = computed['I_mag']
+            self.P = computed['P']
+            self.Emag = computed['E']
+            self.Ex = computed['Ex']
+            self.Ey = computed['Ey']
+        else:
+            # Perfectly reasonable to apply 0 V, but problematic for this algorithm
+            # Pretend V_contact is 1
+            computed = solve(self.resist(), 1)
+            zeros = np.zeros((self.h, self.w))
+            self.V = zeros
+            self.I = 0.
+            self.Ix = zeros
+            self.Iy = zeros
+            self.I_mag = zeros
+            self.P = zeros
+            self.Emag = zeros
+            self.Ex = zeros
+            self.Ey = zeros
 
         self.V_contact = V_contact
-        self.V = computed['V']
         self.R = computed['R']
-        self.I = computed['I']
-        self.Ix = computed['Ix']
-        self.Iy = computed['Iy']
-        self.I_mag = computed['I_mag']
-        self.P = computed['P']
-        self.Emag = computed['E']
-        self.Ex = computed['Ex']
-        self.Ey = computed['Ey']
 
         self.iv.t.append(self.time[-1])
-        if len(self.iv.I) == 0:
-            self.iv.I.append(0)
-            self.iv.V.append(0)
-        else:
-            self.iv.I.append(self.I)
-            self.iv.V.append(V_contact)
+        self.iv.I.append(self.I)
+        self.iv.V.append(V_contact)
         self.iv.R.append(self.R)
+
+    def pulse(self, V_arr, dt=None, rate=None, Ilimit=None):
+        ''' Apply voltage pulse to cell '''
+        if rate is None and dt is None:
+            raise Exception('Must give dt XOR rate')
+        if dt is not None:
+            # Equally space V_arr in time
+            t_arr = np.linspace(0, dt, len(V_arr))
+        else:
+            rate = float(rate)
+            t_arr = np.append(0, np.cumsum(np.abs(np.diff(V_arr)/rate)))
+            dt = t_arr[-1]
+
+        def V(t):
+            return np.interp(t, t_arr, V_arr)
+
+        t0 = self.time[-1]
+        i = 0
+        while self.time[-1] < t0 + dt:
+            # Appends to self.iv
+            self.compute(V(self.time[-1]))
+            # Appends to self.iv.t
+            self.step()
+            if i % 10 == 0:
+                print('Time: {}'.format(self.iv.t[-1]))
+                print('Voltage: {}'.format(self.iv.V[-1]))
+                print('Current: {}'.format(self.iv.I[-1]))
+                print('Resistance: {}'.format(self.iv.R[-1]))
+            i += 1
 
     def plot_neighbors(self, ax=None, **kwargs):
         if ax is None:
@@ -187,7 +230,6 @@ class fractal():
         image = np.where(self.neighbormask(), True, np.nan)
         ax.imshow(image, interpolation='nearest', **kwargs)
         plt.draw()
-
 
     def plot(self, hue=None, ax=None, hl=None, **kwargs):
         ''' Plot current state of the field '''
@@ -277,19 +319,22 @@ class iv(object):
 # also make another version which wraps in the horizontal direction
 
 def solve(R, V_contact=1):
-    ''' Compute currents and voltage of mesh of resistors. Top electrode at 0V '''
-    t0 = time()
+    '''
+    Compute currents and voltage of mesh of resistors. Top electrode at 0V
+    '''
+    # t0 = time()
     out = dict()
 
     m, n = np.shape(R)
 
+
     # Put some contacts on top and bottom
     contact_R = 0
     contact = contact_R * np.ones((1, n))
-    R = np.vstack(( contact, R, contact ))
+    R = np.vstack((contact, R, contact))
     m = m + 2
 
-    Adim =(n-1)*(m-1) + 1
+    Adim = (n - 1) * (m - 1) + 1
 
     row = []
     col = []
@@ -514,17 +559,17 @@ def write_frames(fractal, dir, skipframes=0, start=0, dV=None, writeloop=True, p
                 return
 
     if writeloop:
-        fig = plt.figure(figsize=(8,8))
+        fig = plt.figure(figsize=(8, 8))
         ax1 = fig.add_subplot(211)
         ax2 = fig.add_subplot(212)
         ax2.set_xlabel('V')
         ax2.set_ylabel('I')
         # Plot loops for autorange
         ax2.plot(fractal.iv.V, fractal.iv.I)
-        ax2.scatter(0,0)
-        #del ax2.lines[0]
+        ax2.scatter(0, 0)
+        # del ax2.lines[0]
     else:
-        fig = plt.figure(figsize=(8,6))
+        fig = plt.figure(figsize=(8, 6))
         ax1 = fig.add_subplot(111)
 
     length = len(ind)
@@ -551,13 +596,13 @@ def write_frames(fractal, dir, skipframes=0, start=0, dV=None, writeloop=True, p
 
     plt.close(fig)
     # Send command to create video with ffmpeg
-    #os.system(r'ffmpeg -framerate 30 -i loop%04d.png -c:v libx264 -r 30 -pix_fmt yuv420p out.mp4')
+    # os.system(r'ffmpeg -framerate 30 -i loop%04d.png -c:v libx264 -r 30 -pix_fmt yuv420p out.mp4')
 
     plt.ion()
+
 
 def truncate_colormap(cmap, minval=0.0, maxval=1.0, n=100):
     new_cmap = mpl.colors.LinearSegmentedColormap.from_list(
         'trunc({n},{a:.2f},{b:.2f})'.format(n=cmap.name, a=minval, b=maxval),
         cmap(np.linspace(minval, maxval, n)))
     return new_cmap
-
