@@ -11,7 +11,7 @@ keep connection matrix in memory and make modifications on pixel toggles
 import numpy as np
 import matplotlib as mpl
 from matplotlib import pyplot as plt
-from time import time
+# from time import time
 import pickle
 from scipy.sparse import coo_matrix
 import matplotlib.animation as animation
@@ -44,6 +44,10 @@ class fractal():
 
         self._bottomrow = np.zeros((h, w), dtype=bool)
         self._bottomrow[-1, :] = True
+
+        self._toprow= np.zeros((h, w), dtype=bool)
+        self._toprow[0, :] = True
+
         self.growdiag = False
 
     def __repr__(self):
@@ -67,6 +71,8 @@ class fractal():
 
         # neighbors = (right | left | bottom | top | self._toprow) & ~self.mat
 
+        edges = right | left | top | bottom
+
         if self.growdiag:
             # Include diagonal neighbors
             bottomleft = pad[:-2, 2:]
@@ -74,9 +80,11 @@ class fractal():
             topright = pad[2:, :-2]
             topleft = pad[2:, 2:]
 
-            neighbors = (right | left | top | bottom | topleft | topright | bottomright | bottomleft | self._bottomrow) & ~self.mat
+            diag = topleft | topright | bottomright | bottomleft
+
+            neighbors = (edges | diag | self._toprow | self._bottomrow) & ~self.mat
         else:
-            neighbors = (right | left | top | bottom | self._bottomrow) & ~self.mat
+            neighbors = (edges | self._toprow | self._bottomrow) & ~self.mat
 
         return neighbors
 
@@ -92,14 +100,14 @@ class fractal():
         # u is for unoccupied
         # u_above means a 0 pixel is above a 1 pixel
         u_above = (top | self._bottomrow) & ~self.mat
-        u_below = bottom & ~self.mat
+        u_below = (bottom | self._toprow) & ~self.mat
         u_left = left & ~self.mat
         u_right = right & ~self.mat
 
         # o is for occupied
         # o_above means a 1 pixel is above a 0 pixel
         o_above = ~top & self.mat & ~self._bottomrow
-        o_below = ~bottom & self.mat
+        o_below = ~bottom & self.mat & ~self._toprow
         o_left = ~left & self.mat
         o_right = ~right & self.mat
 
@@ -140,6 +148,7 @@ class fractal():
         return pix, dt
 
     def step(self):
+        # Toggle a pixel somewhere
         pix, dt = self.choose_pixel()
         self.toggle(pix)
         self.time.append(self.time[-1] + dt)
@@ -158,7 +167,7 @@ class fractal():
 
         return pointmask
 
-    def compute(self, V_contact=1):
+    def compute(self, V_contact=1, saveiv=False):
         # TODO: put full compute code in here
 
         if V_contact != 0:
@@ -190,33 +199,47 @@ class fractal():
         self.V_contact = V_contact
         self.R = computed['R']
 
-        self.iv.t.append(self.time[-1])
-        self.iv.I.append(self.I)
-        self.iv.V.append(V_contact)
-        self.iv.R.append(self.R)
+        if saveiv:
+            self.iv.t.append(self.time[-1])
+            self.iv.I.append(self.I)
+            self.iv.V.append(V_contact)
+            self.iv.R.append(self.R)
 
-    def pulse(self, V_arr, dt=None, rate=None, Ilimit=None):
-        ''' Apply voltage pulse to cell '''
-        if rate is None and dt is None:
-            raise Exception('Must give dt XOR rate')
-        if dt is not None:
+    def pulse(self, V_arr, duration=None, rate=None, Ilimit=None, maxiter=None):
+        ''' Apply voltage pulse to cell.  Ilimit not implemented'''
+        if rate is None and duration is None:
+            raise Exception('Must give duration XOR rate')
+        if duration is not None:
             # Equally space V_arr in time
-            t_arr = np.linspace(0, dt, len(V_arr))
+            t_arr = np.linspace(0, duration, len(V_arr))
         else:
             rate = float(rate)
             t_arr = np.append(0, np.cumsum(np.abs(np.diff(V_arr)/rate)))
-            dt = t_arr[-1]
+            duration = t_arr[-1]
 
         def V(t):
             return np.interp(t, t_arr, V_arr)
 
         t0 = self.time[-1]
         i = 0
-        while self.time[-1] < t0 + dt:
+        while self.time[-1] < t0 + duration:
+            if maxiter is not None and i == maxiter:
+                break
             # Appends to self.iv
-            self.compute(V(self.time[-1]))
-            # Appends to self.iv.t
-            self.step()
+            self.compute(V(self.time[-1] - t0), saveiv=True)
+
+            # Figure out how long next move takes
+            pix, dt = self.choose_pixel()
+            # enforce some maximum time step, so that voltage has a chance to
+            # change even if nothing is happening
+            maxtime = duration / 100.
+            if dt > maxtime:
+                self.time.append(self.time[-1] + maxtime)
+                # log that nothing changed in this time
+                self.log.append(np.nan)
+            else:
+                self.toggle(pix)
+                self.time.append(self.time[-1] + dt)
             if i % 10 == 0:
                 print('Time: {}'.format(self.iv.t[-1]))
                 print('Voltage: {}'.format(self.iv.V[-1]))
@@ -492,7 +515,8 @@ class rerun(fractal):
     def next(self, numframes=1):
         # Execute numframes of history
         for p in self.commands[self.frame:self.frame + numframes]:
-            self.toggle(p)
+            if type(p) == tuple:
+                self.toggle(p)
         self.frame += numframes
         return 0 if self.frame > len(self.commands) else 1
 
@@ -528,7 +552,7 @@ def movie(game, interval=0.1, skipframes=0, start=0):
     #ani.save('movie.mp4', writer=writer)
     return ani
 
-def write_frames(fractal, dir, skipframes=0, start=0, dV=None, writeloop=True, plotE=True, cmap=None, **kwargs):
+def write_frames(fractal, dir, skipframes=0, start=0, dV=None, writeloop=True, plotE=True, cmap=None, vmax=.00222, **kwargs):
     '''
     Write a bunch of pngs to directory for movie.
     Step frames by voltage
@@ -572,19 +596,20 @@ def write_frames(fractal, dir, skipframes=0, start=0, dV=None, writeloop=True, p
         fig = plt.figure(figsize=(8, 6))
         ax1 = fig.add_subplot(111)
 
-    length = len(ind)
-    for i, d in enumerate(data_gen()):
-        d.compute()
+    # Don't know why -1
+    length = len(ind) - 1
+    for i, d in enumerate(data_gen(), 1):
+        d.compute(fractal.iv.V[i])
         ax1.cla()
         if plotE:
             d.plotE(cmap='plasma', ax=ax1, vmin=0, vmax=.04)
 
-        d.plot(hue=d.I_mag, cmap=cmap, ax=ax1, vmin=0, vmax=0.00222, **kwargs)
+        d.plot(hue=d.I_mag, cmap=cmap, ax=ax1, vmin=0, vmax=vmax, **kwargs)
         if writeloop:
             del ax2.lines[0]
             del ax2.collections[0]
-            Vloop = d.iv.V[:ind[i]]
-            Iloop = d.iv.I[:ind[i]]
+            Vloop = fractal.iv.V[:ind[i]]
+            Iloop = fractal.iv.I[:ind[i]]
             if len(Vloop) == 0:
                 Vloop = [0]
                 Iloop = [0]
@@ -592,13 +617,24 @@ def write_frames(fractal, dir, skipframes=0, start=0, dV=None, writeloop=True, p
             ax2.scatter(Vloop[-1], Iloop[-1], c='black', zorder=2)
         fn = os.path.join(dir, 'frame{:0>4d}.png'.format(i))
         fig.savefig(fn, bbox_inches='tight')
+        if i == length:
+            # Write image again as the 0000th frame so that it shows up as
+            # preview.
+            fig.savefig(os.path.join(dir, 'frame0000.png'), bbox_inches='tight')
         print('Wrote {}/{}: {}'.format(i, length, fn))
 
     plt.close(fig)
-    # Send command to create video with ffmpeg
-    # os.system(r'ffmpeg -framerate 30 -i loop%04d.png -c:v libx264 -r 30 -pix_fmt yuv420p out.mp4')
+
+    frames_to_mp4(dir)
 
     plt.ion()
+
+def frames_to_mp4(directory):
+    # Send command to create video with ffmpeg
+    cmd = (r'cd "{}" & ffmpeg -framerate 30 -i frame%04d.png -c:v libx264 '
+            '-r 30 -pix_fmt yuv420p -vf "scale=trunc(iw/2)*2:trunc(ih/2)*2" '
+            'out.mp4').format(directory)
+    os.system(cmd)
 
 
 def truncate_colormap(cmap, minval=0.0, maxval=1.0, n=100):
