@@ -30,7 +30,8 @@ class fractal():
         self.mat = np.zeros((h, w), dtype=bool)
         self.f0 = 10**13
         self.Eb = .3
-        self.beta = 2
+        self.latticep = 5e-10
+        self.beta = 2e-10
         # factor for power -> temperature
         self.alpha = 10**6
         self.kT = 0.026
@@ -178,9 +179,9 @@ class fractal():
             self.Iy = computed['Iy']
             self.I_mag = computed['I_mag']
             self.P = computed['P']
-            self.Emag = computed['E']
-            self.Ex = computed['Ex']
-            self.Ey = computed['Ey']
+            self.Emag = computed['E'] / self.latticep
+            self.Ex = computed['Ex'] / self.latticep
+            self.Ey = computed['Ey'] / self.latticep
         else:
             # Perfectly reasonable to apply 0 V, but problematic for this algorithm
             # Pretend V_contact is 1
@@ -482,7 +483,7 @@ def solve(R, V_contact=1):
     # Calculate voltages from vertical currents
     V = V_contact + np.vstack((np.zeros((1, n)), np.cumsum(-I_vert * R_vert, axis=0)))
 
-    # Electric field
+    # Electric field in volts/pixel!
     E = np.gradient(-V)
     Ex = E[0]
     Ey = E[1]
@@ -626,6 +627,7 @@ def write_frames(fractal, dir, skipframes=0, start=0, dV=None, writeloop=True, p
     plt.close(fig)
 
     frames_to_mp4(dir)
+    fractal.write(os.path.join(dir, 'data.pickle'))
 
     plt.ion()
 
