@@ -7,6 +7,7 @@ the local electric field.
 todo
 
 keep connection matrix in memory and make modifications on pixel toggles
+add reset method
 '''
 import numpy as np
 import matplotlib as mpl
@@ -29,11 +30,11 @@ class fractal():
         self.log = []
         self.mat = np.zeros((h, w), dtype=bool)
         self.f0 = 10**13
-        self.Eb = .3
+        self.Eb = .9
         self.latticep = 5e-10
         self.beta = 2e-10
         # factor for power -> temperature
-        self.alpha = 10**6
+        self.alpha = 1
         self.kT = 0.026
 
         # Updated every self.step()
@@ -52,7 +53,16 @@ class fractal():
         self.growdiag = False
 
     def __repr__(self):
-        return '{}x{} fractal instance'.format(self.h, self.w)
+        stringout = ('{}x{} fractal instance\n'
+                     'Eb = {}\n'
+                     'beta = {}\n'
+                     'alpha = {}\n'
+                     'R1 = {}\n'
+                     'R2 = {}\n'
+                     'f0 = {}\n'
+                     'latticep = {}')
+        return stringout.format(self.h, self.w, self.Eb, self.beta,self.alpha,
+                                self.R1, self.R2, self.f0, self.latticep)
 
     def toggle(self, (i, j)):
         ''' Toggle pixel i, j '''
@@ -125,18 +135,31 @@ class fractal():
         # Power law
         # gamma = Emag**self.beta
         (u_a, u_b, u_l, u_r), (o_a, o_b, o_l, o_r) = self.neighbor_masks()
+        nmask = u_a | u_b | u_r | u_l | o_a | o_b | o_r | o_l
 
         def gammafunc(E):
-            return self.f0 * np.exp(-(self.Eb - self.beta * E) / (self.kT + self.alpha * self.P))
-        gamma_mat = (u_a * gammafunc(self.Ex) +
-                     u_b * gammafunc(-self.Ex) +
-                     u_r * gammafunc(-self.Ey) +
-                     u_l * gammafunc(self.Ey) +
-                     o_a * gammafunc(-self.Ex) +
-                     o_b * gammafunc(self.Ex) +
-                     o_r * gammafunc(self.Ey) +
-                     o_l * gammafunc(-self.Ey))
-        nmask = u_a | u_b | u_r | u_l | o_a | o_b | o_r | o_l
+            return self.f0 * np.exp(-(self.Eb - self.beta * E) / (self.kT + self.alpha * self.T))
+
+        # TODO: This calculates gamma for entire matrix, but you could calculate
+        # just for the neighbors
+        gamma_Ex = gammafunc(self.Ex)
+        gamma_nEx = gammafunc(-self.Ex)
+        gamma_Ey = gammafunc(self.Ey)
+        gamma_nEy = gammafunc(-self.Ey)
+        gamma_mat = (u_a * gamma_Ex +
+                     u_b * gamma_nEx +
+                     u_r * gamma_nEy +
+                     u_l * gamma_Ey +
+                     o_a * gamma_Ex +
+                     o_b * gamma_nEx +
+                     o_r * gamma_nEy +
+                     o_l * gamma_Ey)
+        # TEMPORARY TEST
+        # What happens when you allow everything to toggle?
+        # neighbors not assisted by E field
+        gamma_mat += gammafunc(np.zeros(np.shape(gamma_mat))) * ~nmask
+        nmask = np.ones(np.shape(gamma_mat), dtype=bool)
+        # /TEMPORARY TEST
         gamma = gamma_mat[nmask]
 
         gamma_sum = np.sum(gamma)
@@ -179,6 +202,8 @@ class fractal():
             self.Iy = computed['Iy']
             self.I_mag = computed['I_mag']
             self.P = computed['P']
+            # Probably not right yet
+            self.T = solve_heat(self.P)
             self.Emag = computed['E'] / self.latticep
             self.Ex = computed['Ex'] / self.latticep
             self.Ey = computed['Ey'] / self.latticep
@@ -336,6 +361,29 @@ class iv(object):
     def plot(self):
         fig, ax = plt.subplots()
         ax.plot(self.V, self.I, '.-', c='SteelBlue')
+
+
+def solve_heat(Q, nt=1000):
+    '''A little poisson solver (static heat eq).
+    Not verified to be correct
+    What are boundary conditions?
+    How to put in thermal conductivity?
+    '''
+    dx = 1.
+    dy = 1.
+    p = np.zeros(np.shape(Q))
+    pn = np.zeros(np.shape(Q))
+    b = -np.abs(Q)
+    for n in range(nt):
+        pn = p.copy()
+        p[1:-1,1:-1] = (dx**2*(pn[1:-1,0:-2] + pn[1:-1,2:]) + \
+        dy**2*(pn[0:-2,1:-1] + pn[2:,1:-1]) -
+        b[1:-1,1:-1]*dx**2*dy**2)/(2*dx**2+2*dy**2)
+
+        p[0,:] = p[-1,:] = p[:,0] = p[:,-1] = 0.0
+
+    return p
+
 
 
 # TODO:  Find a way to generate matrices more quickly by storing previous one
