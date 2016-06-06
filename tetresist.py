@@ -275,6 +275,14 @@ class tetresist():
         X, Y = np.meshgrid(range(self.h), range(self.w), indexing='ij')
         ax.streamplot(Y, X, self.Ey, self.Ex, **kwargs)
 
+    def plotE_quiver(self, ax=None, **kwargs):
+        ''' plot vector field of E, one arrow per pixel '''
+        if ax is None:
+            ax = plt.gca()
+        X, Y = np.meshgrid(range(self.h), range(self.w), indexing='ij')
+        # Have to invert Ex since quiver is messed up
+        ax.quiver(Y, X, self.Ey, -self.Ex, pivot='mid', **kwargs)
+
     def plotE(self, ax=None, cmap='hot', interpolation=None, **kwargs):
         ''' plot the electric field magnitude'''
         if ax is None:

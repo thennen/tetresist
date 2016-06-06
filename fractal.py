@@ -30,12 +30,15 @@ class fractal():
         self.log = []
         self.mat = np.zeros((h, w), dtype=bool)
         self.f0 = 10**13
-        self.Eb = .9
+        #self.Eb = .9
+        self.Eb1 = .85
+        self.Eb0 = .9
         self.latticep = 5e-10
         self.beta = 2e-10
         # factor for power -> temperature
         self.alpha = 1
         self.kT = 0.026
+        self.T = np.zeros((h,w))
 
         # Updated every self.step()
         self.time = [0]
@@ -54,15 +57,16 @@ class fractal():
 
     def __repr__(self):
         stringout = ('{}x{} fractal instance\n'
-                     'Eb = {}\n'
+                     'Eb0 = {}\n'
+                     'Eb1 = {}\n'
                      'beta = {}\n'
                      'alpha = {}\n'
                      'R1 = {}\n'
                      'R2 = {}\n'
                      'f0 = {}\n'
                      'latticep = {}')
-        return stringout.format(self.h, self.w, self.Eb, self.beta,self.alpha,
-                                self.R1, self.R2, self.f0, self.latticep)
+        return stringout.format(self.h, self.w, self.Eb0, self.Eb1, self.beta,
+                                self.alpha, self.R1, self.R2, self.f0, self.latticep)
 
     def toggle(self, (i, j)):
         ''' Toggle pixel i, j '''
@@ -126,6 +130,9 @@ class fractal():
         return ((u_above, u_below, u_left, u_right),
                 (o_above, o_below, o_left, o_right))
 
+    def gammafunc(self, E):
+        return self.f0 * np.exp(-(self.Eb() - self.beta * E) / (self.kT + self.alpha * self.T))
+
     def choose_pixel(self):
         ''' Calculate transition rates, return pixel to toggle, and time step'''
         # nmask = self.neighbormask()
@@ -137,15 +144,15 @@ class fractal():
         (u_a, u_b, u_l, u_r), (o_a, o_b, o_l, o_r) = self.neighbor_masks()
         nmask = u_a | u_b | u_r | u_l | o_a | o_b | o_r | o_l
 
-        def gammafunc(E):
-            return self.f0 * np.exp(-(self.Eb - self.beta * E) / (self.kT + self.alpha * self.T))
 
         # TODO: This calculates gamma for entire matrix, but you could calculate
         # just for the neighbors
-        gamma_Ex = gammafunc(self.Ex)
-        gamma_nEx = gammafunc(-self.Ex)
-        gamma_Ey = gammafunc(self.Ey)
-        gamma_nEy = gammafunc(-self.Ey)
+
+        # Since Eb depends on state, need to calculate a lot
+        gamma_Ex = self.gammafunc(self.Ex)
+        gamma_nEx = self.gammafunc(-self.Ex)
+        gamma_Ey = self.gammafunc(self.Ey)
+        gamma_nEy = self.gammafunc(-self.Ey)
         gamma_mat = (u_a * gamma_Ex +
                      u_b * gamma_nEx +
                      u_r * gamma_nEy +
@@ -157,7 +164,7 @@ class fractal():
         # TEMPORARY TEST
         # What happens when you allow everything to toggle?
         # neighbors not assisted by E field
-        gamma_mat += gammafunc(np.zeros(np.shape(gamma_mat))) * ~nmask
+        gamma_mat += self.gammafunc(np.zeros(np.shape(gamma_mat))) * ~nmask
         nmask = np.ones(np.shape(gamma_mat), dtype=bool)
         # /TEMPORARY TEST
         gamma = gamma_mat[nmask]
@@ -203,7 +210,7 @@ class fractal():
             self.I_mag = computed['I_mag']
             self.P = computed['P']
             # Probably not right yet
-            self.T = solve_heat(self.P)
+            #self.T = solve_heat(self.P)
             self.Emag = computed['E'] / self.latticep
             self.Ex = computed['Ex'] / self.latticep
             self.Ey = computed['Ey'] / self.latticep
@@ -325,12 +332,29 @@ class fractal():
         X, Y = np.meshgrid(range(self.h), range(self.w), indexing='ij')
         ax.streamplot(Y, X, self.Iy, self.Ix, **kwargs)
 
+    def plot_grid(self, ax=None, **kwargs):
+        ''' plot grid to distinguish pixels or whatever'''
+        if ax is None:
+            ax = plt.gca()
+        ax.hlines(np.arange(self.h) + .5, -.5, self.w - .5, linestyles='dashed',
+                  alpha=0.5, **kwargs)
+        ax.vlines(np.arange(self.w) + .5, -.5, self.h - .5, linestyles='dashed',
+                  alpha=0.5, **kwargs)
+
     def plotE_vect(self, ax=None, **kwargs):
         ''' plot vector field of E'''
         if ax is None:
             ax = plt.gca()
         X, Y = np.meshgrid(range(self.h), range(self.w), indexing='ij')
         ax.streamplot(Y, X, self.Ey, self.Ex, **kwargs)
+
+    def plotE_quiver(self, ax=None, **kwargs):
+        ''' plot vector field of E, one arrow per pixel '''
+        if ax is None:
+            ax = plt.gca()
+        X, Y = np.meshgrid(range(self.h), range(self.w), indexing='ij')
+        # Have to invert Ex since quiver is messed up
+        ax.quiver(Y, X, self.Ey, -self.Ex, pivot='mid', **kwargs)
 
     def plotE(self, ax=None, cmap='hot', interpolation=None, **kwargs):
         ''' plot the electric field magnitude'''
@@ -340,6 +364,9 @@ class fractal():
 
     def resist(self):
         return np.where(self.mat, self.R2, self.R1)
+
+    def Eb(self):
+        return np.where(self.mat, self.Eb1, self.Eb0)
 
     def write(self, fp='fractal.pickle'):
         if os.path.isfile(fp):
@@ -571,6 +598,7 @@ class rerun(fractal):
 
 def movie(game, interval=0.1, skipframes=0, start=0):
     ''' TODO: generate everything before animation somehow '''
+    # PROBLEM!!!  Does not clear previous frame!
     t = rerun(game, start=start)
     def data_gen():
         while t.frame < len(t.commands):
@@ -651,7 +679,9 @@ def write_frames(fractal, dir, skipframes=0, start=0, dV=None, writeloop=True, p
         d.compute(fractal.iv.V[i])
         ax1.cla()
         if plotE:
-            d.plotE(cmap='plasma', ax=ax1, vmin=0, vmax=.04)
+            #d.plotE(cmap='plasma', ax=ax1, vmin=0, vmax=.04)
+            # Temp
+            ax1.imshow(T, cmap='hot')
 
         d.plot(hue=d.I_mag, cmap=cmap, ax=ax1, vmin=0, vmax=vmax, **kwargs)
         if writeloop:
