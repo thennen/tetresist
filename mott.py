@@ -26,16 +26,21 @@ class mott():
         self.w = w
         self.log = []
         self.mat = np.zeros((h, w), dtype=bool)
-        self.f0 = 1
-        self.Eb = 20
-        self.Emi = 0
-        self.Ecm = 10
-        self.latticep = 1
-        self.beta = 1
+
+        self.Rseries = 1.
+        self.f0 = 1.
+        self.Eb = 20.
+        self.Emi = 0.
+        self.Ecm = 10.
+        self.beta = 1.
+        self.kT = 1
+
+
+        # Not in stolier paper
         # factor for power -> temperature
         self.alpha = 1
-        self.kT = 1
         self.T = np.zeros((h,w))
+        self.latticep = 1.
 
         # Updated every self.step()
         self.time = [0]
@@ -188,26 +193,33 @@ class mott():
         return pointmask
 
     def compute(self, V_contact=1, saveiv=False):
-        # TODO: put full compute code in here
+        # TODO: put full compute code in here, and don't compute things that are not used
+
+        # clear the interpreter window so you can read the parameters
+        os.system('cls')
 
         if V_contact != 0:
             computed = solve(self.resist(), V_contact)
-            self.V = computed['V']
-            self.I = computed['I']
-            self.Ix = computed['Ix']
-            self.Iy = computed['Iy']
-            self.I_mag = computed['I_mag']
-            self.P = computed['P']
+            # If there is a series resistor, multiply everything by this scale
+            dividerscale = computed['R'] / (computed['R'] + self.Rseries)
+            self.V_contact = V_contact * dividerscale
+            self.V = computed['V'] * dividerscale
+            self.I = computed['I'] * dividerscale
+            self.Ix = computed['Ix'] * dividerscale
+            self.Iy = computed['Iy'] * dividerscale
+            self.I_mag = computed['I_mag'] * dividerscale
+            self.P = computed['P'] * dividerscale
             # Probably not right yet
             #self.T = solve_heat(self.P)
-            self.Emag = computed['E'] / self.latticep
-            self.Ex = computed['Ex'] / self.latticep
-            self.Ey = computed['Ey'] / self.latticep
+            self.Emag = computed['E'] * dividerscale / self.latticep
+            self.Ex = computed['Ex'] * dividerscale / self.latticep
+            self.Ey = computed['Ey'] * dividerscale / self.latticep
         else:
             # Perfectly reasonable to apply 0 V, but problematic for this algorithm
-            # Pretend V_contact is 1
+            # for the purpose of calculating R, pretend V_contact is 1
             computed = solve(self.resist(), 1)
             zeros = np.zeros((self.h, self.w))
+            self.V_contact = 0.
             self.V = zeros
             self.I = 0.
             self.Ix = zeros
@@ -218,13 +230,12 @@ class mott():
             self.Ex = zeros
             self.Ey = zeros
 
-        self.V_contact = V_contact
         self.R = computed['R']
 
         if saveiv:
             self.iv.t.append(self.time[-1])
             self.iv.I.append(self.I)
-            self.iv.V.append(V_contact)
+            self.iv.V.append(self.V_contact)
             self.iv.R.append(self.R)
 
     def pulse(self, V_arr, duration=None, rate=None, Ilimit=None, maxiter=None):
