@@ -19,22 +19,30 @@ import os
 
 
 class mott():
-    def __init__(self, h=40, w=128, R1=16, R2=0.3):
+    def __init__(self, h=40, w=128, R1=16., R2=0.3):
         self.R1 = float(R1)
         self.R2 = float(R2)
         self.h = h
         self.w = w
         self.log = []
         self.mat = np.zeros((h, w), dtype=bool)
+        # List of points that cannot toggle
+        self.fixed = []
+
+        # For most recently computed transition rates
+        self.gamma_mat = np.zeros((h, w))
+        self.E_i_m = []
 
         self.Rseries = 1.
         self.f0 = 1.
         self.Eb = 20.
-        self.Emi = 0.
-        self.Ecm = 10.
+        self.Ei = 0.
+        self.Em = 10.
         self.beta = 1.
         self.kT = 1
 
+        # This should be the voltage threshold
+        self.Vthresh = self.Em / self.beta * self.h
 
         # Not in stolier paper
         # factor for power -> temperature
@@ -72,9 +80,10 @@ class mott():
 
     def toggle(self, (i, j)):
         ''' Toggle pixel i, j '''
-        self.mat[i, j] = not self.mat[i, j]
-        self.log.append((i, j))
-        # update matrix for laplace calculation?
+        if (i,j) not in self.fixed:
+            self.mat[i, j] = not self.mat[i, j]
+            self.log.append((i, j))
+            # update matrix for laplace calculation?
 
     def neighbormask(self):
         ''' Return boolean mask of neighbors '''
@@ -139,17 +148,19 @@ class mott():
         # insulator to metal barrier reduced by E
         # 0 -> 1
         insulator_ind = np.where(~self.mat)
-        Emi_cm = self.Eb - self.beta * self.Emag[insulator_ind]
-        gamma_mi = self.f0 * np.exp(-Emi_cm) / self.kT
-        print('minimum Emi_cm = {}'.format(np.min(Emi_cm)))
+        E_i_m = self.Eb - self.beta * self.Emag[insulator_ind]
+        self.E_i_m = E_i_m
+        gamma_i_m = self.f0 * np.exp(-E_i_m) / self.kT
+
         # Metal to insulator not effected by E, no need to repeat calculation
         # 1 -> 0
-        Ecm_mi = self.Eb - self.Ecm
-        gamma_cm = self.f0 * np.exp(-Ecm_mi) / self.kT
+        E_m_i = self.Eb - self.Em
+        gamma_m_i = self.f0 * np.exp(-E_m_i) / self.kT
 
         # Construct and return gamma matrix
-        gamma_mat = gamma_cm * self.mat
-        gamma_mat[insulator_ind] = gamma_mi
+        gamma_mat = gamma_m_i * self.mat
+        gamma_mat[insulator_ind] = gamma_i_m
+        self.gamma_mat = gamma_mat
         return gamma_mat
 
 
@@ -193,8 +204,6 @@ class mott():
         return pointmask
 
     def compute(self, V_contact=1, saveiv=False):
-        # TODO: put full compute code in here, and don't compute things that are not used
-
         # clear the interpreter window so you can read the parameters
         os.system('cls')
 
@@ -259,7 +268,8 @@ class mott():
             if maxiter is not None and i == maxiter:
                 break
             # Appends to self.iv
-            self.compute(V(self.time[-1] - t0), saveiv=True)
+            V_apply = V(self.time[-1] - t0)
+            self.compute(V_apply, saveiv=True)
 
             # Figure out how long next move takes
             pix, dt = self.choose_pixel()
@@ -274,10 +284,13 @@ class mott():
                 self.toggle(pix)
                 self.time.append(self.time[-1] + dt)
             if i % 10 == 0:
+                print('\n'*100)
                 print('Time: {}'.format(self.iv.t[-1]))
-                print('Voltage: {}'.format(self.iv.V[-1]))
+                print('Applied Voltage: {}'.format(V_apply))
+                print('Device Voltage: {}'.format(self.iv.V[-1]))
                 print('Current: {}'.format(self.iv.I[-1]))
                 print('Resistance: {}'.format(self.iv.R[-1]))
+                print('Min I to M energy barrier: {}'.format(np.min(self.E_i_m)))
             i += 1
 
     def plot_neighbors(self, ax=None, **kwargs):
@@ -378,7 +391,7 @@ class mott():
 
 
 class iv(object):
-    ''' Just a little container class for IV data '''
+    ''' Just a little container class for IV data that can do basic plotting'''
     def __init__(self):
         self.t = []
         self.I = []
@@ -426,9 +439,8 @@ def solve(R, V_contact=1):
 
     m, n = np.shape(R)
 
-
     # Put some contacts on top and bottom
-    contact_R = 0
+    contact_R = 0.
     contact = contact_R * np.ones((1, n))
     R = np.vstack((contact, R, contact))
     m = m + 2
@@ -629,11 +641,12 @@ def movie(game, interval=0.1, skipframes=0, start=0):
     #ani.save('movie.mp4', writer=writer)
     return ani
 
-def write_frames(mott, dir, skipframes=0, start=0, dV=None, writeloop=True, plotE=True, cmap=None, vmax=.00222, **kwargs):
+def write_frames(mott, dir, skipframes=0, start=0, dV=None, plotxy=None, plotE=True, cmap=None, vmax=.00222, **kwargs):
     '''
     Write a bunch of pngs to directory for movie.
     Step frames by voltage
     basically so you don't capture a ton of frames where nothing is happening
+    plotxy = ('xdata', 'ydata') should be an attribute name of the iv container class
     TODO: step by voltage OR current, so you don't miss any good frames
     '''
     plt.ioff()
@@ -659,14 +672,18 @@ def write_frames(mott, dir, skipframes=0, start=0, dV=None, writeloop=True, plot
             if not r.next(di):
                 return
 
-    if writeloop:
-        fig = plt.figure(figsize=(8, 8))
+    if plotxy is not None:
+        # TODO: Size should depend on aspect ratio of cell
+        fig = plt.figure(figsize=(9, 8))
         ax1 = fig.add_subplot(211)
         ax2 = fig.add_subplot(212)
-        ax2.set_xlabel('V')
-        ax2.set_ylabel('I')
-        # Plot loops for autorange
-        ax2.plot(mott.iv.V, mott.iv.I)
+        xattr, yattr = plotxy
+        ax2.set_xlabel(xattr)
+        ax2.set_ylabel(yattr)
+        # Plot all data for autorange
+        xdata = getattr(mott.iv, xattr)
+        ydata = getattr(mott.iv, yattr)
+        ax2.plot(xdata, ydata)
         ax2.scatter(0, 0)
         # del ax2.lines[0]
     else:
@@ -679,21 +696,21 @@ def write_frames(mott, dir, skipframes=0, start=0, dV=None, writeloop=True, plot
         d.compute(mott.iv.V[i])
         ax1.cla()
         if plotE:
-            #d.plotE(cmap='plasma', ax=ax1, vmin=0, vmax=.04)
+            d.plotE(cmap='plasma', ax=ax1, vmin=0, vmax=10)
             # Temp
-            ax1.imshow(T, cmap='hot')
+            #ax1.imshow(T, cmap='hot')
 
         d.plot(hue=d.I_mag, cmap=cmap, ax=ax1, vmin=0, vmax=vmax, **kwargs)
-        if writeloop:
+        if plotxy:
             del ax2.lines[0]
             del ax2.collections[0]
-            Vloop = mott.iv.V[:ind[i]]
-            Iloop = mott.iv.I[:ind[i]]
-            if len(Vloop) == 0:
-                Vloop = [0]
-                Iloop = [0]
-            ax2.plot(Vloop, Iloop, c='SteelBlue', alpha=.8)
-            ax2.scatter(Vloop[-1], Iloop[-1], c='black', zorder=2)
+            xpartial = xdata[:ind[i]]
+            ypartial = ydata[:ind[i]]
+            if len(xpartial) == 0:
+                xpartial = [0]
+                ypartial = [0]
+            ax2.plot(xpartial, ypartial, c='SteelBlue', alpha=.8)
+            ax2.scatter(xpartial[-1], ypartial[-1], c='black', zorder=2)
         fn = os.path.join(dir, 'frame{:0>4d}.png'.format(i))
         fig.savefig(fn, bbox_inches='tight')
         if i == length:

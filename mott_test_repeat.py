@@ -30,6 +30,7 @@ for i, (m,v) in enumerate(zip(ma, vpulse)):
 legend(title='Pulse Voltage (AU)')
 ax1.set_xlabel('\"Time\"')
 ax1.set_ylabel('\"Resistance\" = V/I')
+plt.show()
 
 # If you made it this far, save data
 
