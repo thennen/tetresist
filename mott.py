@@ -606,6 +606,7 @@ class rerun(mott):
             if type(p) == tuple:
                 self.toggle(p)
         self.frame += numframes
+        print('Frame # ' + str(self.frame))
         return 0 if self.frame > len(self.commands) else 1
 
 def movie(game, interval=0.1, skipframes=0, start=0):
@@ -615,7 +616,7 @@ def movie(game, interval=0.1, skipframes=0, start=0):
     def data_gen():
         while t.frame < len(t.commands):
             yield t
-            t.next(1+skipframes)
+            t.next(1 + skipframes)
 
     def run(data):
         try:
@@ -641,26 +642,42 @@ def movie(game, interval=0.1, skipframes=0, start=0):
     #ani.save('movie.mp4', writer=writer)
     return ani
 
-def write_frames(mott, dir, skipframes=0, start=0, dV=None, plotxy=None, plotE=True, cmap=None, vmax=.00222, **kwargs):
+def write_frames(mott, dir, skipframes=0, start=0, dV=None, dt=None, plotxy=None, plotE=True, cmap=None, vmax=.00222, **kwargs):
     '''
     Write a bunch of pngs to directory for movie.
-    Step frames by voltage
     basically so you don't capture a ton of frames where nothing is happening
     plotxy = ('xdata', 'ydata') should be an attribute name of the iv container class
-    TODO: step by voltage OR current, so you don't miss any good frames
+    TODO: interpolate for equal frame spacing in time, current, or voltage
+    set dV to step frames by voltage
     '''
     plt.ioff()
     if cmap is None:
         cmap = truncate_colormap(plt.cm.inferno, .2, 1.0)
 
-    if dV is None:
-        ind = np.arange(start, len(mott.log), skipframes + 1)
-    else:
+    if dV is not None:
         # Determine frames to save
+        # Convert all changes to positive for purposes of interpolation
         vsteps = np.cumsum(np.abs(np.diff(mott.iv.V)))
-        gp = groupby(enumerate(vsteps), lambda vs: int(vs[1]/dV))
+        # Groups all of the voltages according the which dV increment they are in
+        # gp = groupby(enumerate(vsteps), lambda vs: int(vs[1]/dV))
+        # ind = [0]
+        # ind.extend([g.next()[0] + 1 for k,g in gp])
+        # this has problem if there is no data point in every dV range
+        # Should repeat indices when there is no data point in a dV range
+
+        # This is an array which says how many times the frame corresponding to
+        # the ith element of iv.V should appear
+        num_reps = diff(np.int8(vsteps/dV))
         ind = [0]
-        ind.extend([g.next()[0] + 1 for k,g in gp])
+        ind.extend(flatten([[i]*j for i,j in enumerate(num_reps)]))
+    elif dt is not None:
+        # time should not have negative diffs, but do this anyway I guess
+        tsteps = np.cumsum(np.abs(np.diff(mott.iv.t)))
+        num_reps = diff(np.int8(tsteps/dt))
+        ind = [0]
+        ind.extend(flatten([[i]*j for i,j in enumerate(num_reps)]))
+    else:
+        ind = np.arange(start, len(mott.log), skipframes + 1)
 
     if not os.path.isdir(dir):
         os.makedirs(dir)
@@ -668,8 +685,10 @@ def write_frames(mott, dir, skipframes=0, start=0, dV=None, plotxy=None, plotE=T
     r = rerun(mott, start=start)
     def data_gen():
         for di in np.diff(ind):
+            print('Take {} steps'.format(di))
             yield r
-            if not r.next(di):
+            # Don't run next() if di is zero!
+            if di != 0 and not r.next(di):
                 return
 
     if plotxy is not None:
@@ -684,7 +703,7 @@ def write_frames(mott, dir, skipframes=0, start=0, dV=None, plotxy=None, plotE=T
         xdata = getattr(mott.iv, xattr)
         ydata = getattr(mott.iv, yattr)
         ax2.plot(xdata, ydata)
-        ax2.scatter(0, 0)
+        ax2.scatter(xdata[start], ydata[start])
         # del ax2.lines[0]
     else:
         fig = plt.figure(figsize=(8, 6))
