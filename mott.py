@@ -5,6 +5,7 @@ todo
 
 keep connection matrix in memory and make modifications on pixel toggles
 add reset method
+
 '''
 import numpy as np
 import matplotlib as mpl
@@ -83,7 +84,8 @@ class mott():
         if (i,j) not in self.fixed:
             self.mat[i, j] = not self.mat[i, j]
             self.log.append((i, j))
-            # update matrix for laplace calculation?
+        else:
+            self.log.append(np.nan)
 
     def neighbormask(self):
         ''' Return boolean mask of neighbors '''
@@ -275,7 +277,7 @@ class mott():
             pix, dt = self.choose_pixel()
             # enforce some maximum time step, so that voltage has a chance to
             # change even if nothing is happening
-            maxtime = duration / 100.
+            maxtime = duration / 300.
             if dt > maxtime:
                 self.time.append(self.time[-1] + maxtime)
                 # log that nothing changed in this time
@@ -283,8 +285,8 @@ class mott():
             else:
                 self.toggle(pix)
                 self.time.append(self.time[-1] + dt)
+            # Print a status every 10 steps
             if i % 10 == 0:
-                print('\n'*100)
                 print('Time: {}'.format(self.iv.t[-1]))
                 print('Applied Voltage: {}'.format(V_apply))
                 print('Device Voltage: {}'.format(self.iv.V[-1]))
@@ -383,7 +385,7 @@ class mott():
 
     def write(self, fp='mott.pickle'):
         if os.path.isfile(fp):
-            print('File already exists.')
+            print('Pickle file already exists.')
         else:
             with open(fp, 'w') as f:
                 pickle.dump(self, f)
@@ -654,6 +656,7 @@ def write_frames(mott, dir, skipframes=0, start=0, dV=None, dt=None, plotxy=None
     if cmap is None:
         cmap = truncate_colormap(plt.cm.inferno, .2, 1.0)
 
+    #import pdb; pdb.set_trace()
     if dV is not None:
         # Determine frames to save
         # Convert all changes to positive for purposes of interpolation
@@ -678,6 +681,7 @@ def write_frames(mott, dir, skipframes=0, start=0, dV=None, dt=None, plotxy=None
         ind.extend(flatten([[i]*j for i,j in enumerate(num_reps)]))
     else:
         ind = np.arange(start, len(mott.log), skipframes + 1)
+    print(ind)
 
     if not os.path.isdir(dir):
         os.makedirs(dir)
