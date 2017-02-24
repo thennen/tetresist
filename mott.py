@@ -206,8 +206,6 @@ class mott():
         return pointmask
 
     def compute(self, V_contact=1, saveiv=False):
-        # clear the interpreter window so you can read the parameters
-        os.system('cls')
 
         if V_contact != 0:
             computed = solve(self.resist(), V_contact)
@@ -596,9 +594,9 @@ def solve(R, V_contact=1):
 
 class rerun(mott):
     ''' Use history of another instance to rerun simulation '''
-    def __init__(self, parent, start=0):
+    def __init__(self, parent, start=0, end=-1):
         mott.__init__(self, h=parent.h, w=parent.w, R1=parent.R1, R2=parent.R2)
-        self.commands = parent.log
+        self.commands = parent.log[:end]
         self.frame = 0
         self.next(start)
 
@@ -608,7 +606,7 @@ class rerun(mott):
             if type(p) == tuple:
                 self.toggle(p)
         self.frame += numframes
-        print('Frame # ' + str(self.frame))
+        #print('Frame # ' + str(self.frame))
         return 0 if self.frame > len(self.commands) else 1
 
 def movie(game, interval=0.1, skipframes=0, start=0):
@@ -644,13 +642,19 @@ def movie(game, interval=0.1, skipframes=0, start=0):
     #ani.save('movie.mp4', writer=writer)
     return ani
 
-def write_frames(mott, dir, skipframes=0, start=0, dV=None, dt=None, plotxy=None, plotE=True, cmap=None, vmax=.00222, **kwargs):
+def write_frames(mott, dir, skipframes=0, start=0, end=-1, dV=None, dt=None, plotxy=None, plotE=True, cmap=None, vmax=.00222, **kwargs):
     '''
     Write a bunch of pngs to directory for movie.
-    basically so you don't capture a ton of frames where nothing is happening
+
+    Can plot electric field in addition to occupation array, should extend to plot any quantity
+
+    Can make a simultaneous xy plot below:
     plotxy = ('xdata', 'ydata') should be an attribute name of the iv container class
-    TODO: interpolate for equal frame spacing in time, current, or voltage
-    set dV to step frames by voltage
+
+    start, end may be given in simulation steps
+
+    set dV to step frames equally in voltage
+    set dt to step frames equally in time
     '''
     plt.ioff()
     if cmap is None:
@@ -660,7 +664,7 @@ def write_frames(mott, dir, skipframes=0, start=0, dV=None, dt=None, plotxy=None
     if dV is not None:
         # Determine frames to save
         # Convert all changes to positive for purposes of interpolation
-        vsteps = np.cumsum(np.abs(np.diff(mott.iv.V)))
+        vsteps = np.cumsum(np.abs(np.diff(mott.iv.V[start:end])))
         # Groups all of the voltages according the which dV increment they are in
         # gp = groupby(enumerate(vsteps), lambda vs: int(vs[1]/dV))
         # ind = [0]
@@ -675,21 +679,20 @@ def write_frames(mott, dir, skipframes=0, start=0, dV=None, dt=None, plotxy=None
         ind.extend(flatten([[i]*j for i,j in enumerate(num_reps)]))
     elif dt is not None:
         # time should not have negative diffs, but do this anyway I guess
-        tsteps = np.cumsum(np.abs(np.diff(mott.iv.t)))
+        tsteps = np.cumsum(np.abs(np.diff(mott.iv.t[start:end])))
         num_reps = diff(np.int8(tsteps/dt))
         ind = [0]
         ind.extend(flatten([[i]*j for i,j in enumerate(num_reps)]))
     else:
         ind = np.arange(start, len(mott.log), skipframes + 1)
-    print(ind)
 
     if not os.path.isdir(dir):
         os.makedirs(dir)
 
-    r = rerun(mott, start=start)
+    r = rerun(mott, start=start, end=end)
     def data_gen():
         for di in np.diff(ind):
-            print('Take {} steps'.format(di))
+            #print('Take {} steps'.format(di))
             yield r
             # Don't run next() if di is zero!
             if di != 0 and not r.next(di):
@@ -706,7 +709,7 @@ def write_frames(mott, dir, skipframes=0, start=0, dV=None, dt=None, plotxy=None
         # Plot all data for autorange
         xdata = getattr(mott.iv, xattr)
         ydata = getattr(mott.iv, yattr)
-        ax2.plot(xdata, ydata)
+        ax2.plot(xdata[start:end], ydata[start:end])
         ax2.scatter(xdata[start], ydata[start])
         # del ax2.lines[0]
     else:
@@ -727,11 +730,12 @@ def write_frames(mott, dir, skipframes=0, start=0, dV=None, dt=None, plotxy=None
         if plotxy:
             del ax2.lines[0]
             del ax2.collections[0]
-            xpartial = xdata[:ind[i]]
-            ypartial = ydata[:ind[i]]
+            xpartial = xdata[start:ind[i]]
+            ypartial = ydata[start:ind[i]]
             if len(xpartial) == 0:
-                xpartial = [0]
-                ypartial = [0]
+                # At least plot first point
+                xpartial = xdata[start:start+1]
+                ypartial = ydata[start:start+1]
             ax2.plot(xpartial, ypartial, c='SteelBlue', alpha=.8)
             ax2.scatter(xpartial[-1], ypartial[-1], c='black', zorder=2)
         fn = os.path.join(dir, 'frame{:0>4d}.png'.format(i))
